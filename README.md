@@ -15,7 +15,7 @@
 
 </div>
 
-> **Status:** 🚧 Week 1 of 8 complete: project skeleton, local stack and CI. See the [roadmap](#roadmap).
+> **Status:** 🚧 Week 2 of 8 complete: repositories are cloned, split into functions and classes, embedded, and stored for search. See the [roadmap](#roadmap).
 
 ## Features
 
@@ -65,9 +65,11 @@ Slow work (indexing repositories, reviewing pull requests) runs in background wo
 ```bash
 git clone https://github.com/Prathmesh2492004/devassist.git
 cd devassist
-cp .env.example .env
+cp .env.example .env          # then add your VOYAGE_API_KEY (free at voyageai.com)
 docker compose up --build
 ```
+
+Open http://localhost:3000/dashboard, paste a public repo such as `pallets/flask`, and watch it index.
 
 | Service | URL |
 |---|---|
@@ -109,7 +111,36 @@ cd api && ruff check . && ruff format --check . && mypy app tests && pytest
 cd web && npm run lint && npx tsc --noEmit && npm run build
 ```
 
-CI also applies every database migration, rolls it back and applies it again, so broken migrations never reach `main`.
+Database tests run against real Postgres with pgvector (start it with `docker compose up -d db`). Each test runs in a transaction that is rolled back, and the test database is built by running every migration down and up, so broken migrations never reach `main`.
+
+## How indexing works
+
+1. **Clone.** A shallow clone (`--depth 1`) of the public repo fetches only the latest commit.
+2. **Filter.** Dependencies, build output, lockfiles, minified, generated and binary files are skipped. Symlinks are never followed.
+3. **Chunk.** [tree-sitter](https://tree-sitter.github.io/) parses Python, JavaScript, TypeScript and Java and splits them at function, class and method boundaries, keeping the comments and decorators above each one. Large classes are split into a header plus one chunk per method. Other files fall back to overlapping 60-line windows.
+4. **Embed.** Chunks are sent to Voyage AI's `voyage-code-3` in batches sized to the API limits, with retries and backoff on rate limits.
+5. **Store.** New chunks replace the old ones in a single transaction, so search never sees a half-indexed repo. Each chunk keeps its path, exact line range and commit SHA for citations.
+
+Each chunk is searchable two ways: an **HNSW vector index** for meaning ("where do we retry payments?") and a **Postgres full-text index** for exact identifiers (`verify_jwt`). Week 3 combines both.
+
+| Repo | Lines | Files | Chunks | Clone + parse |
+|---|---|---|---|---|
+| pallets/flask | 34,573 | 204 | 1,255 | 5.8 s |
+| encode/httpx | 23,515 | 95 | 1,187 | 13.0 s |
+
+<sub>Measured locally before embedding. Embedding adds about 10 Voyage requests per repo this size.</sub>
+
+## API
+
+| Method | Path | What it does |
+|---|---|---|
+| `POST` | `/repos` | Connect a public repo (`{"full_name": "owner/name"}`) and start indexing |
+| `GET` | `/repos` | List repos with status, progress and stats |
+| `GET` | `/repos/{id}` | One repo |
+| `POST` | `/repos/{id}/reindex` | Index again from the latest commit |
+| `DELETE` | `/repos/{id}` | Remove a repo and its index |
+
+Interactive docs are at http://localhost:8000/docs.
 
 ## Project structure
 
@@ -117,6 +148,7 @@ CI also applies every database migration, rolls it back and applies it again, so
 devassist/
 ├── api/                    FastAPI backend
 │   ├── app/
+│   │   ├── ingest/         Clone, filter, chunk (tree-sitter), embed, store
 │   │   ├── routes/         HTTP endpoints
 │   │   ├── models.py       SQLAlchemy models
 │   │   ├── worker.py       Celery app and tasks
@@ -136,7 +168,7 @@ devassist/
 ## Roadmap
 
 - [x] **Week 1: Foundations.** Monorepo, FastAPI and Next.js skeletons, Docker Compose, CI
-- [ ] **Week 2: Ingestion.** Clone repos, chunk code with tree-sitter, store embeddings in pgvector
+- [x] **Week 2: Ingestion.** Clone repos, chunk code with tree-sitter, store embeddings in pgvector
 - [ ] **Week 3: Retrieval.** Hybrid search, reranking, streamed answers with citations
 - [ ] **Week 4: GitHub App.** Webhooks and automatic inline PR reviews
 - [ ] **Week 5: Product.** GitHub sign-in, multiple repos, rate limiting, incremental re-indexing
