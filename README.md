@@ -37,7 +37,7 @@ flowchart LR
     R --> C[Celery workers]
     C --> P
     C --> L[Claude API]
-    C --> V[Voyage AI embeddings]
+    C --> O[Ollama: local embedding model]
     A --> L
 ```
 
@@ -50,7 +50,7 @@ Slow work (indexing repositories, reviewing pull requests) runs in background wo
 | **Backend** | Python 3.12, FastAPI, SQLAlchemy 2, Alembic, Celery |
 | **Data** | PostgreSQL 16 with pgvector, Redis 7 |
 | **Frontend** | Next.js 15 (App Router), TypeScript, Tailwind CSS |
-| **AI** | Claude API, Voyage AI code embeddings, tree-sitter parsing |
+| **AI** | Claude API, Qwen3-Embedding via Ollama (local) or Voyage AI, tree-sitter parsing |
 | **DevOps** | Docker Compose, GitHub Actions, AWS with Terraform |
 | **Quality** | pytest, Ruff, mypy (strict), ESLint, Dependabot |
 
@@ -65,7 +65,7 @@ Slow work (indexing repositories, reviewing pull requests) runs in background wo
 ```bash
 git clone https://github.com/Prathmesh2492004/devassist.git
 cd devassist
-cp .env.example .env          # then add your VOYAGE_API_KEY (free at voyageai.com)
+cp .env.example .env
 docker compose up --build
 ```
 
@@ -118,7 +118,7 @@ Database tests run against real Postgres with pgvector (start it with `docker co
 1. **Clone.** A shallow clone (`--depth 1`) of the public repo fetches only the latest commit.
 2. **Filter.** Dependencies, build output, lockfiles, minified, generated and binary files are skipped. Symlinks are never followed.
 3. **Chunk.** [tree-sitter](https://tree-sitter.github.io/) parses Python, JavaScript, TypeScript and Java and splits them at function, class and method boundaries, keeping the comments and decorators above each one. Large classes are split into a header plus one chunk per method. Other files fall back to overlapping 60-line windows.
-4. **Embed.** Chunks are sent to Voyage AI's `voyage-code-3` in batches sized to the API limits, with retries and backoff on rate limits.
+4. **Embed.** Chunks are turned into 1024-dimensional vectors in batches, with retries and backoff. See [Embedding providers](#embedding-providers).
 5. **Store.** New chunks replace the old ones in a single transaction, so search never sees a half-indexed repo. Each chunk keeps its path, exact line range and commit SHA for citations.
 
 Each chunk is searchable two ways: an **HNSW vector index** for meaning ("where do we retry payments?") and a **Postgres full-text index** for exact identifiers (`verify_jwt`). Week 3 combines both.
@@ -128,7 +128,19 @@ Each chunk is searchable two ways: an **HNSW vector index** for meaning ("where 
 | pallets/flask | 34,573 | 204 | 1,255 | 5.8 s |
 | encode/httpx | 23,515 | 95 | 1,187 | 13.0 s |
 
-<sub>Measured locally before embedding. Embedding adds about 10 Voyage requests per repo this size.</sub>
+<sub>Measured locally before embedding.</sub>
+
+### Embedding providers
+
+| | Ollama (default) | Voyage AI |
+|---|---|---|
+| Model | `qwen3-embedding:0.6b` | `voyage-code-3` |
+| Cost | Free | 200M free tokens, then paid |
+| Limits | None | 3 requests/min until a payment method is added |
+| Privacy | Code never leaves your machine | Code is sent to Voyage |
+| Speed (Flask, 1,255 chunks) | About 7 min on a GTX 1650 GPU; over an hour on a laptop CPU | Seconds to minutes |
+
+Switch with `EMBEDDING_PROVIDER=voyage` and `VOYAGE_API_KEY=...` in `.env`, then re-index. Both produce 1024-dimensional vectors, so no database change is needed. The first `docker compose up` downloads the Ollama image and the 639 MB model once. With an NVIDIA GPU, add `COMPOSE_FILE=docker-compose.yml;docker-compose.gpu.yml` to `.env` (use `:` instead of `;` on macOS/Linux).
 
 ## API
 

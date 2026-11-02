@@ -12,6 +12,9 @@ from app.models import EMBEDDING_DIMENSIONS
 class FakeEmbedder:
     """Deterministic embeddings derived from a hash of the text. No network calls."""
 
+    batch_items = 128
+    batch_chars = 240_000
+
     def __init__(self) -> None:
         self.calls: list[int] = []
 

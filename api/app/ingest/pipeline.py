@@ -93,7 +93,7 @@ def index_repository(
         texts = [_embedding_text(c) for c in chunks]
         vectors: list[list[float]] = []
         tokens = 0
-        for start, batch in iter_batches(texts):
+        for start, batch in iter_batches(texts, embedder.batch_items, embedder.batch_chars):
             result = embedder.embed_documents(batch)
             vectors.extend(result.vectors)
             tokens += result.tokens

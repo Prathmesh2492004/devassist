@@ -1,0 +1,14 @@
+# Optional: run the local embedding model on an NVIDIA GPU (much faster than CPU).
+# Needs an NVIDIA driver; on Windows, Docker Desktop with the WSL 2 backend.
+#
+# Enable it by adding this line to .env (use ':' instead of ';' on macOS/Linux):
+#   COMPOSE_FILE=docker-compose.yml;docker-compose.gpu.yml
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

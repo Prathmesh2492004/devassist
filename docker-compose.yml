@@ -23,6 +23,33 @@ services:
       interval: 5s
       retries: 10
 
+  # Local embedding model server. Free and unlimited; runs on the CPU.
+  ollama:
+    image: ollama/ollama:0.40.6
+    environment:
+      OLLAMA_KEEP_ALIVE: 10m  # free the model's memory after 10 idle minutes
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_NUM_PARALLEL: "1"
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      retries: 20
+
+  # One-off: download the embedding model (639 MB, cached in a volume after the first run).
+  ollama-pull:
+    image: ollama/ollama:0.40.6
+    environment:
+      OLLAMA_HOST: ollama:11434
+    entrypoint: ["ollama", "pull", "${OLLAMA_MODEL:-qwen3-embedding:0.6b}"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
   api:
     build: ./api
     env_file:
@@ -50,6 +77,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://devassist:devassist@db:5432/devassist
       REDIS_URL: redis://redis:6379/0
+      OLLAMA_URL: http://ollama:11434
     command: celery -A app.worker worker --loglevel=info
     volumes:
       - ./api:/app
@@ -58,6 +86,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      ollama-pull:
+        condition: service_completed_successfully
 
   web:
     build: ./web
@@ -74,3 +104,4 @@ services:
 
 volumes:
   pgdata:
+  ollama-models:

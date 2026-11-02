@@ -129,6 +129,9 @@ def test_unexpected_errors_are_not_shown_to_users(
     repo: Repo, sample_repo: Path, db: Session, session_factory: sessionmaker[Session]
 ) -> None:
     class BrokenEmbedder:
+        batch_items = 10
+        batch_chars = 10_000
+
         def embed_documents(self, texts: object) -> object:
             raise RuntimeError("internal detail: connection string postgres://secret")
 
