@@ -12,12 +12,19 @@ dependencies = [
     "pydantic-settings>=2.6",
     "celery[redis]>=5.4",
     "redis>=5.2",
+    "httpx>=0.28",
+    "pgvector>=0.4",
+    # 0.26.0 crashes (access violation) when one parser handles many files in a row.
+    "tree-sitter>=0.25,<0.26",
+    "tree-sitter-python>=0.23",
+    "tree-sitter-javascript>=0.23",
+    "tree-sitter-typescript>=0.23",
+    "tree-sitter-java>=0.23",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3",
-    "httpx>=0.28",
     "ruff>=0.8",
     "mypy>=1.13",
     "celery-types>=0.22",

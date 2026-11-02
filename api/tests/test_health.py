@@ -7,8 +7,8 @@ from app.db import get_db
 from app.main import create_app
 
 
-def test_health_is_ok(client: TestClient) -> None:
-    res = client.get("/health")
+def test_health_is_ok() -> None:
+    res = TestClient(create_app()).get("/health")
     assert res.status_code == 200
     assert res.json() == {"status": "ok", "database": None}
 
