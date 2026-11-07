@@ -6,7 +6,7 @@ export const metadata: Metadata = { title: "Dashboard · DevAssist" };
 
 export default function Dashboard() {
   return (
-    <div className="grid gap-10">
+    <div className="mx-auto grid max-w-5xl gap-10 px-4 py-12">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div className="grid gap-1">
           <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>

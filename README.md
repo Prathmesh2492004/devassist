@@ -15,13 +15,13 @@
 
 </div>
 
-> **Status:** 🚧 Week 2 of 8 complete: repositories are cloned, split into functions and classes, embedded, and stored for search. See the [roadmap](#roadmap).
+> **Status:** 🚧 Week 3 of 8 complete: ask questions about an indexed repository and get streamed answers that cite the exact files and lines. See the [roadmap](#roadmap).
 
 ## Features
 
 | | Feature | Status |
 |---|---|---|
-| 💬 | **Codebase Q&A with citations.** Ask "Where do we validate JWTs?" and get a streamed answer that links to the exact files and lines it used. | Week 3 |
+| 💬 | **Codebase Q&A with citations.** Ask "Where do we validate JWTs?" and get a streamed answer that links to the exact files and lines it used. | ✅ Done |
 | 🔍 | **Automatic PR reviews.** A GitHub App reads each new pull request, pulls related code from the index, and posts inline comments on likely bugs. | Week 4 |
 | 📊 | **Quality and cost dashboard.** Tracks answer accuracy on a test set, latency, tokens and cost per question. | Week 8 |
 
@@ -50,7 +50,7 @@ Slow work (indexing repositories, reviewing pull requests) runs in background wo
 | **Backend** | Python 3.12, FastAPI, SQLAlchemy 2, Alembic, Celery |
 | **Data** | PostgreSQL 16 with pgvector, Redis 7 |
 | **Frontend** | Next.js 15 (App Router), TypeScript, Tailwind CSS |
-| **AI** | Claude API, Qwen3-Embedding via Ollama (local) or Voyage AI, tree-sitter parsing |
+| **AI** | Local models via Ollama (Qwen2.5-Coder, Qwen3-Embedding) with optional Claude API or Voyage AI, tree-sitter parsing |
 | **DevOps** | Docker Compose, GitHub Actions, AWS with Terraform |
 | **Quality** | pytest, Ruff, mypy (strict), ESLint, Dependabot |
 
@@ -69,7 +69,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Open http://localhost:3000/dashboard, paste a public repo such as `pallets/flask`, and watch it index.
+Open http://localhost:3000/dashboard, paste a public repo such as `pallets/flask`, and watch it index. When it's ready, click **Ask questions**.
 
 | Service | URL |
 |---|---|
@@ -121,7 +121,7 @@ Database tests run against real Postgres with pgvector (start it with `docker co
 4. **Embed.** Chunks are turned into 1024-dimensional vectors in batches, with retries and backoff. See [Embedding providers](#embedding-providers).
 5. **Store.** New chunks replace the old ones in a single transaction, so search never sees a half-indexed repo. Each chunk keeps its path, exact line range and commit SHA for citations.
 
-Each chunk is searchable two ways: an **HNSW vector index** for meaning ("where do we retry payments?") and a **Postgres full-text index** for exact identifiers (`verify_jwt`). Week 3 combines both.
+Each chunk is searchable two ways: an **HNSW vector index** for meaning ("where do we retry payments?") and a **Postgres full-text index** for exact identifiers (`verify_jwt`).
 
 | Repo | Lines | Files | Chunks | Clone + parse |
 |---|---|---|---|---|
@@ -142,6 +142,25 @@ Each chunk is searchable two ways: an **HNSW vector index** for meaning ("where 
 
 Switch with `EMBEDDING_PROVIDER=voyage` and `VOYAGE_API_KEY=...` in `.env`, then re-index. Both produce 1024-dimensional vectors, so no database change is needed. The first `docker compose up` downloads the Ollama image and the 639 MB model once. With an NVIDIA GPU, add `COMPOSE_FILE=docker-compose.yml;docker-compose.gpu.yml` to `.env` (use `:` instead of `;` on macOS/Linux).
 
+## How answering works
+
+1. **Search two ways.** The question is embedded with the same model as the code and matched against the HNSW index, while its distinctive words (`verify_jwt` becomes `verify | jwt`) go to Postgres full-text search. Each search returns its top 40 chunks for this repo.
+2. **Merge the rankings.** [Reciprocal rank fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) scores each chunk by `1 / (60 + rank)` in each list, so a chunk found by both searches rises to the top without comparing their very different score scales.
+3. **Answer with citations.** The model gets the best chunks (up to 6, and at most 24,000 characters of code) with every line numbered, and is told to back each claim with `[path:start-end]`, citing only code it was shown. The answer streams to the browser over Server-Sent Events.
+4. **Check the citations.** The web app turns each citation into a chip. Clicking one opens the cited lines beside the answer, with a GitHub link pinned to the indexed commit, so links never drift as the repo changes. A citation that doesn't match any retrieved chunk is shown struck through.
+5. **Follow up.** Conversations are saved. A follow-up question is searched together with the previous one ("and where is it tested?" means little alone), and the last 6 turns are sent as context.
+
+### Answer providers
+
+| | Ollama (default) | Claude API |
+|---|---|---|
+| Model | `qwen2.5-coder:3b` | `claude-sonnet-5-5` |
+| Cost | Free | About $0.02 per question (prepaid credits) |
+| Privacy | Code never leaves your machine | Code excerpts are sent to Anthropic |
+| Quality | Good for "where is X?" questions; sometimes cites the wrong lines | Better explanations and more reliable citations |
+
+Switch with `ANSWER_PROVIDER=anthropic` and `ANTHROPIC_API_KEY=...` in `.env`, then restart the API. Citations that don't match the retrieved code are struck through in the UI, so weaker answers are easy to spot.
+
 ## API
 
 | Method | Path | What it does |
@@ -151,6 +170,10 @@ Switch with `EMBEDDING_PROVIDER=voyage` and `VOYAGE_API_KEY=...` in `.env`, then
 | `GET` | `/repos/{id}` | One repo |
 | `POST` | `/repos/{id}/reindex` | Index again from the latest commit |
 | `DELETE` | `/repos/{id}` | Remove a repo and its index |
+| `POST` | `/repos/{id}/ask` | Ask a question (`{"question": "...", "conversation_id": 1}`); the answer streams as Server-Sent Events |
+| `GET` | `/repos/{id}/conversations` | List conversations about a repo |
+| `GET` | `/conversations/{id}` | A conversation with its messages, sources and token counts |
+| `DELETE` | `/conversations/{id}` | Delete a conversation |
 
 Interactive docs are at http://localhost:8000/docs.
 
@@ -161,6 +184,7 @@ devassist/
 ├── api/                    FastAPI backend
 │   ├── app/
 │   │   ├── ingest/         Clone, filter, chunk (tree-sitter), embed, store
+│   │   ├── qa/             Hybrid search and cited answers
 │   │   ├── routes/         HTTP endpoints
 │   │   ├── models.py       SQLAlchemy models
 │   │   ├── worker.py       Celery app and tasks
@@ -169,7 +193,7 @@ devassist/
 │   └── tests/
 ├── web/                    Next.js frontend
 │   └── src/
-│       ├── app/            Pages (landing, dashboard)
+│       ├── app/            Pages (landing, dashboard, chat)
 │       └── components/
 ├── infra/                  Terraform for AWS (Week 7)
 ├── docs/                   Screenshots and design notes
@@ -181,7 +205,7 @@ devassist/
 
 - [x] **Week 1: Foundations.** Monorepo, FastAPI and Next.js skeletons, Docker Compose, CI
 - [x] **Week 2: Ingestion.** Clone repos, chunk code with tree-sitter, store embeddings in pgvector
-- [ ] **Week 3: Retrieval.** Hybrid search, reranking, streamed answers with citations
+- [x] **Week 3: Retrieval.** Hybrid search, streamed answers with citations, saved conversations
 - [ ] **Week 4: GitHub App.** Webhooks and automatic inline PR reviews
 - [ ] **Week 5: Product.** GitHub sign-in, multiple repos, rate limiting, incremental re-indexing
 - [ ] **Week 6: Quality.** 50-question evaluation set, accuracy gate in CI, 80% test coverage

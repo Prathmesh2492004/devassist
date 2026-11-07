@@ -20,7 +20,7 @@ const features = [
 
 export default function Home() {
   return (
-    <div className="grid gap-16">
+    <div className="mx-auto grid max-w-5xl gap-16 px-4 py-12">
       <section className="grid max-w-2xl gap-6">
         <h1 className="text-5xl font-bold tracking-tight text-balance">
           Understand any codebase in minutes.

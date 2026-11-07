@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { ACTIVE_STATUSES, ApiError, api, type Repo, type RepoStatus } from "@/lib/api";
 
@@ -180,6 +181,14 @@ function RepoRow({ repo, onChange }: { repo: Repo; onChange: () => Promise<void>
           </span>
         </div>
         <div className="flex gap-2">
+          {repo.last_indexed_sha && repo.chunk_count > 0 && (
+            <Link
+              href={`/repos/${repo.id}`}
+              className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white dark:text-background"
+            >
+              Ask questions
+            </Link>
+          )}
           <button
             type="button"
             onClick={() => run(() => api.reindexRepo(repo.id))}
