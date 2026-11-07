@@ -41,7 +41,7 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 EnqueueIndex = Annotated[Enqueue, Depends(get_enqueue_index)]
 
 
-def _get_owned_repo(db: Session, user: User, repo_id: int) -> Repo:
+def get_owned_repo(db: Session, user: User, repo_id: int) -> Repo:
     repo = db.get(Repo, repo_id)
     if repo is None or repo.owner_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Repository not found")
@@ -76,12 +76,12 @@ def add_repo(body: RepoCreate, db: Db, user: CurrentUser, enqueue: EnqueueIndex)
 
 @router.get("/{repo_id}")
 def get_repo(repo_id: int, db: Db, user: CurrentUser) -> RepoOut:
-    return RepoOut.model_validate(_get_owned_repo(db, user, repo_id))
+    return RepoOut.model_validate(get_owned_repo(db, user, repo_id))
 
 
 @router.post("/{repo_id}/reindex", status_code=status.HTTP_202_ACCEPTED)
 def reindex_repo(repo_id: int, db: Db, user: CurrentUser, enqueue: EnqueueIndex) -> RepoOut:
-    repo = _get_owned_repo(db, user, repo_id)
+    repo = get_owned_repo(db, user, repo_id)
     if repo.status.is_active:
         raise HTTPException(status.HTTP_409_CONFLICT, "This repository is already being indexed")
     repo.status = RepoStatus.QUEUED
@@ -94,5 +94,5 @@ def reindex_repo(repo_id: int, db: Db, user: CurrentUser, enqueue: EnqueueIndex)
 
 @router.delete("/{repo_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_repo(repo_id: int, db: Db, user: CurrentUser) -> None:
-    db.delete(_get_owned_repo(db, user, repo_id))
+    db.delete(get_owned_repo(db, user, repo_id))
     db.commit()

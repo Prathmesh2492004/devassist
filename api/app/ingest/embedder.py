@@ -34,6 +34,8 @@ class Embedder(Protocol):
 
     def embed_documents(self, texts: Sequence[str]) -> EmbeddingResult: ...
 
+    def embed_query(self, text: str) -> list[float]: ...
+
 
 class EmbeddingError(Exception):
     pass
@@ -93,10 +95,16 @@ class VoyageEmbedder:
         self._sleep = sleep
 
     def embed_documents(self, texts: Sequence[str]) -> EmbeddingResult:
+        return self._embed(texts, "document")
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._embed([text], "query").vectors[0]
+
+    def _embed(self, texts: Sequence[str], input_type: str) -> EmbeddingResult:
         payload = {
             "input": list(texts),
             "model": self._model,
-            "input_type": "document",
+            "input_type": input_type,
             "output_dimension": EMBEDDING_DIMENSIONS,
         }
         response = _post_with_retries(
@@ -126,6 +134,11 @@ class _OllamaResponse(TypedDict, total=False):
     prompt_eval_count: int
 
 
+# Qwen3-Embedding is trained with an instruction on the query side only; documents are embedded
+# as-is. See the model card.
+QUERY_INSTRUCTION = "Given a question about a codebase, retrieve the code that answers it"
+
+
 class OllamaEmbedder:
     # A local model on CPU: small batches keep memory low and progress updates frequent.
     batch_items = 16
@@ -147,6 +160,12 @@ class OllamaEmbedder:
         self._sleep = sleep
 
     def embed_documents(self, texts: Sequence[str]) -> EmbeddingResult:
+        return self._embed(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._embed([f"Instruct: {QUERY_INSTRUCTION}\nQuery: {text}"]).vectors[0]
+
+    def _embed(self, texts: Sequence[str]) -> EmbeddingResult:
         payload = {"model": self._model, "input": list(texts), "truncate": True}
         response = _post_with_retries(
             self._client, self._url, payload, f"Ollama at {self._base_url}", self._sleep

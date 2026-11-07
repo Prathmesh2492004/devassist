@@ -1,12 +1,15 @@
 import hashlib
 import math
 import shutil
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
+
+from anthropic.types.beta import BetaMessageParam
 
 from app.ingest.embedder import EmbeddingResult
 from app.ingest.git import CloneResult
 from app.models import EMBEDDING_DIMENSIONS
+from app.qa.answer import AnswerDelta, AnswerDone
 
 
 class FakeEmbedder:
@@ -22,12 +25,37 @@ class FakeEmbedder:
         self.calls.append(len(texts))
         return EmbeddingResult(vectors=[fake_vector(t) for t in texts], tokens=len(texts) * 10)
 
+    def embed_query(self, text: str) -> list[float]:
+        return fake_vector(text)
+
 
 def fake_vector(text: str) -> list[float]:
     seed = hashlib.sha256(text.encode()).digest()
     raw = [((seed[i % len(seed)] + i) % 251) - 125.0 for i in range(EMBEDDING_DIMENSIONS)]
     norm = math.sqrt(sum(x * x for x in raw))
     return [x / norm for x in raw]
+
+
+class FakeAnswerer:
+    """Streams a fixed answer and records what it was asked."""
+
+    model = "fake-model"
+
+    def __init__(self, answer: str = "It is in [src/billing.py:4-5].") -> None:
+        self.answer = answer
+        self.calls: list[tuple[str, list[BetaMessageParam]]] = []
+        self.error: Exception | None = None
+
+    def stream(
+        self, system: str, messages: Sequence[BetaMessageParam]
+    ) -> Iterator[AnswerDelta | AnswerDone]:
+        self.calls.append((system, list(messages)))
+        words = self.answer.split(" ")
+        for i, word in enumerate(words):
+            yield AnswerDelta(word if i == len(words) - 1 else word + " ")
+            if self.error is not None and i == 0:
+                raise self.error
+        yield AnswerDone(model=self.model, input_tokens=1000, output_tokens=len(words))
 
 
 class FakeCloner:

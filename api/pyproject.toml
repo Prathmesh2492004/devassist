@@ -13,6 +13,7 @@ dependencies = [
     "celery[redis]>=5.4",
     "redis>=5.2",
     "httpx>=0.28",
+    "anthropic>=2.4",
     "pgvector>=0.4",
     # 0.26.0 crashes (access violation) when one parser handles many files in a row.
     "tree-sitter>=0.25,<0.26",

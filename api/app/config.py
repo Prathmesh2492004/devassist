@@ -4,6 +4,8 @@ from typing import Literal
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+Effort = Literal["low", "medium", "high"]
+
 
 class Settings(BaseSettings):
     """App settings, read from environment variables or a .env file."""
@@ -23,6 +25,23 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen3-embedding:0.6b"
     voyage_api_key: SecretStr | None = None
     voyage_model: str = "voyage-code-3"
+
+    # Answers. "ollama" runs a local model (free, private, weaker); "anthropic" uses Claude
+    # (better answers, about $0.02 per question with Sonnet, needs a key with credits).
+    answer_provider: Literal["ollama", "anthropic"] = "ollama"
+    ollama_answer_model: str = "qwen2.5-coder:3b"
+    # Tokens the local model can read at once. Must hold the system prompt, the excerpts, the
+    # recent conversation and the answer. 8K fits a 3B model fully on a 4 GB GPU.
+    ollama_answer_context: int = 8_192
+    anthropic_api_key: SecretStr | None = None
+    claude_answer_model: str = "claude-sonnet-5-5"
+    # How much Claude thinks before answering. "low" keeps answers fast; raise it for harder
+    # questions about how a whole system fits together.
+    claude_answer_effort: Effort = "low"
+    # How much code goes to the model with each question: at most this many chunks, and at
+    # most this many characters of code in total (the best-ranked chunks are kept).
+    answer_sources: int = 6
+    answer_source_chars: int = 16_000
 
     # Indexing limits: keep one huge or unusual repo from exhausting the worker.
     clone_timeout_seconds: int = 300

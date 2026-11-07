@@ -28,7 +28,8 @@ services:
     image: ollama/ollama:0.40.6
     environment:
       OLLAMA_KEEP_ALIVE: 10m  # free the model's memory after 10 idle minutes
-      OLLAMA_MAX_LOADED_MODELS: "1"
+      # The embedding model and the answer model stay loaded together (about 3 GB of GPU memory).
+      OLLAMA_MAX_LOADED_MODELS: "2"
       OLLAMA_NUM_PARALLEL: "1"
     ports:
       - "11434:11434"
@@ -39,12 +40,18 @@ services:
       interval: 5s
       retries: 20
 
-  # One-off: download the embedding model (639 MB, cached in a volume after the first run).
+  # One-off: download the embedding model (639 MB) and the answer model (1.9 GB). They are
+  # cached in a volume, so this only downloads on the first run.
   ollama-pull:
     image: ollama/ollama:0.40.6
     environment:
       OLLAMA_HOST: ollama:11434
-    entrypoint: ["ollama", "pull", "${OLLAMA_MODEL:-qwen3-embedding:0.6b}"]
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        ollama pull ${OLLAMA_MODEL:-qwen3-embedding:0.6b} &&
+        ollama pull ${OLLAMA_ANSWER_MODEL:-qwen2.5-coder:3b}
     depends_on:
       ollama:
         condition: service_healthy
@@ -58,6 +65,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://devassist:devassist@db:5432/devassist
       REDIS_URL: redis://redis:6379/0
+      OLLAMA_URL: http://ollama:11434
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     ports:
       - "8000:8000"
@@ -68,6 +76,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      ollama-pull:
+        condition: service_completed_successfully
 
   worker:
     build: ./api

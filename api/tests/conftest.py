@@ -20,9 +20,11 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.db import get_db
+from app.db import get_db, get_session_factory
 from app.main import create_app
+from app.routes.conversations import get_answerer, get_query_embedder
 from app.routes.repos import get_enqueue_index
+from tests.fakes import FakeAnswerer, FakeEmbedder
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL", "postgresql+psycopg://devassist:devassist@localhost:5432/devassist_test"
@@ -88,9 +90,22 @@ def enqueued() -> list[int]:
 
 
 @pytest.fixture
-def client(db: Session, enqueued: list[int]) -> Iterator[TestClient]:
+def answerer() -> FakeAnswerer:
+    return FakeAnswerer()
+
+
+@pytest.fixture
+def client(
+    db: Session,
+    session_factory: sessionmaker[Session],
+    enqueued: list[int],
+    answerer: FakeAnswerer,
+) -> Iterator[TestClient]:
     app = create_app()
     app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_enqueue_index] = lambda: enqueued.append
+    app.dependency_overrides[get_answerer] = lambda: answerer
+    app.dependency_overrides[get_query_embedder] = FakeEmbedder
     with TestClient(app) as c:
         yield c
