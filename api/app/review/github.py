@@ -8,10 +8,14 @@ raises that to 5,000.
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, TypedDict
+from urllib.parse import quote
 
 import httpx
 
 GITHUB_API = "https://api.github.com"
+# Raw file downloads don't count against the REST API's hourly limit.
+GITHUB_RAW = "https://raw.githubusercontent.com"
+MAX_FILE_BYTES = 500_000
 FILES_PER_PAGE = 100
 MAX_FILE_PAGES = 3  # GitHub returns at most 3,000 files; 300 is plenty to review
 
@@ -109,6 +113,20 @@ class GitHubClient:
                 for f in files
             ],
         )
+
+    def file_text(self, full_name: str, ref: str, path: str) -> str | None:
+        """A file's text at a commit, or None if it can't be read (missing, binary, huge)."""
+        url = f"{GITHUB_RAW}/{full_name}/{ref}/{quote(path)}"
+        try:
+            response = self._client.get(url, headers={"User-Agent": self._headers["User-Agent"]})
+        except httpx.TransportError:
+            return None
+        if response.status_code != 200 or len(response.content) > MAX_FILE_BYTES:
+            return None
+        try:
+            return response.content.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
 
     def _get(
         self,

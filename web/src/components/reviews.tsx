@@ -421,11 +421,23 @@ function DiffRow({ line, notes }: { line: DiffLine; notes?: Finding[] }) {
         <tr key={i}>
           <td colSpan={3} className="border-y border-line bg-background px-3 py-2">
             <div className="grid max-w-2xl gap-1 font-sans text-sm whitespace-normal">
-              <span
-                className={`w-fit rounded border px-1.5 text-[0.7rem] font-medium uppercase ${SEVERITY_STYLE[note.severity]}`}
-              >
-                {note.severity}
-              </span>
+              <div className="flex items-center gap-2">
+                <span
+                  className={`w-fit rounded border px-1.5 text-[0.7rem] font-medium uppercase ${SEVERITY_STYLE[note.severity]}`}
+                >
+                  {note.severity}
+                </span>
+                <span
+                  className="text-xs text-muted"
+                  title={
+                    note.source === "rule"
+                      ? "Found by a linter rule: a known bug pattern, rarely wrong."
+                      : "Flagged by the AI model's checks: worth a look, but it can be wrong."
+                  }
+                >
+                  {note.source === "rule" ? "Rule check" : "AI check"}
+                </span>
+              </div>
               <p className="leading-relaxed">{note.comment}</p>
             </div>
           </td>

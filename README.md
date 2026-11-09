@@ -165,12 +165,26 @@ Switch with `ANSWER_PROVIDER=anthropic` and `ANTHROPIC_API_KEY=...` in `.env`, t
 
 1. **Fetch the pull request.** The worker reads the PR and its per-file diffs from the GitHub REST API. Public repos need no token; a free `GITHUB_TOKEN` raises GitHub's limit from 60 to 5,000 requests an hour.
 2. **Pick the files.** Only code files are reviewed: deleted files, binaries, lockfiles, docs and JSON are skipped (and listed as skipped), up to 15 files per PR.
-3. **Add context.** For each file, the added lines are used as a search query against the index, and the 3 best chunks from the rest of the repo go to the model, so it can see how the changed code is called.
-4. **Review one file at a time.** Each diff is shown with new-file line numbers. The model must reply with JSON matching a schema (`{line, severity, comment}` findings), enforced by Ollama's structured output or Claude's `json_schema` output format, so a small model can't return malformed text.
-5. **Check every finding.** A finding on a line the diff doesn't show is dropped, since it is usually invented and GitHub would reject it as a review comment. Duplicates go too, and at most 3 findings per file are kept, to keep the signal high.
+3. **Run the rules.** For Python files, the new version of the file is downloaded and checked with [Ruff](https://docs.astral.sh/ruff/)'s bug and security rules (SQL injection, `shell=True`, `eval`, hardcoded passwords, mutable default arguments, swallowed exceptions and more). Only problems on lines the PR added are kept. Rules are exact, instant and free.
+4. **Ask the model.** How depends on the model:
+   - **Local model (default): focused checks.** Asked "find any problem", the 3B model almost always answers "none". So it gets narrow questions instead (can a value here be empty or None? can an index go out of range? is a condition inverted?), and reasons before each yes/no. Its answers are noisy, so a problem is reported only when two differently worded passes flag the same check on the same line. A clean file costs one call.
+   - **Claude: open review.** A strong model gets the whole diff plus the 3 most related chunks from the index, and reviews freely.
+
+   Every reply must be JSON matching a schema, enforced by Ollama's structured output or Claude's `json_schema` output format.
+5. **Check every finding.** A finding on a line the diff doesn't show is dropped, since it is usually invented and GitHub would reject it as a review comment. One finding per line (a rule beats the model), at most 3 per file, most severe first. Each finding says whether it came from a rule or from the AI.
 6. **Summarize.** A last call writes a short summary from the findings. The page polls while the review runs, then shows the diff with each finding under its line.
 
-With the local model a review takes about 10 to 30 seconds per file on a 4 GB GPU, and costs nothing.
+### Measuring the reviewer
+
+[`api/evals/review_cases.py`](api/evals/review_cases.py) holds 15 small changes: 12 with one planted bug each and 3 clean ones. Run `docker compose exec worker python -m evals.review_eval` to score each approach. With `qwen2.5-coder:3b`:
+
+| Approach | Bugs caught | False alarms on clean code |
+|---|---|---|
+| Open-ended model review (the first version) | 0 of 12 | 0 of 3 |
+| Rules only | 8 of 12 | 0 of 3 |
+| Rules + focused model checks (current) | 9 of 12 | 1 of 3 |
+
+The rules carry most of the weight. The model adds logic bugs such as dividing by the length of an empty list, but still misses an inverted permission check and a missing `None` check, and sometimes flags clean code, so its findings are labelled "AI check". With the local model a review takes about 10 to 30 seconds per file on a 4 GB GPU, and costs nothing.
 
 ## API
 
@@ -200,11 +214,12 @@ devassist/
 │   ├── app/
 │   │   ├── ingest/         Clone, filter, chunk (tree-sitter), embed, store
 │   │   ├── qa/             Hybrid search and cited answers
-│   │   ├── review/         Pull request fetching, diff parsing and file-by-file review
+│   │   ├── review/         Pull request fetching, diff parsing, rules and model checks
 │   │   ├── routes/         HTTP endpoints
 │   │   ├── models.py       SQLAlchemy models
 │   │   ├── worker.py       Celery app and tasks
 │   │   └── main.py         App factory
+│   ├── evals/              Test sets that measure review quality
 │   ├── migrations/         Alembic migrations
 │   └── tests/
 ├── web/                    Next.js frontend

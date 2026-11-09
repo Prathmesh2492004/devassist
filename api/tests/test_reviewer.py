@@ -4,11 +4,13 @@ import pytest
 
 from app.models import Chunk
 from app.qa.search import SearchHit
+from app.review.checks import CHECKS
 from app.review.github import ChangedFile, PullRequest
 from app.review.reviewer import (
     FILE_SCHEMA,
     Finding,
     ReviewSettings,
+    _best,
     parse_findings,
     review_pull_request,
     skip_reason,
@@ -82,7 +84,7 @@ def test_malformed_replies_give_no_findings(text: str) -> None:
     assert parse_findings(text, "a.py", {1}, limit=3) == []
 
 
-def test_reviews_each_code_file_with_related_code_then_summarizes() -> None:
+def test_open_review_uses_related_code_then_summarizes() -> None:
     answerer = FakeAnswerer()
     answerer.json_replies = [
         _findings({"line": 2, "severity": "bug", "comment": "Rounds money with floats."}),
@@ -102,7 +104,8 @@ def test_reviews_each_code_file_with_related_code_then_summarizes() -> None:
         "octocat/shop",
         answerer=answerer,
         related_code=related_code,
-        settings=ReviewSettings(),
+        file_content=lambda path: None,
+        settings=ReviewSettings(strategy="open"),
         on_progress=lambda done, total: progress.append((done, total)),
     )
 
@@ -134,6 +137,7 @@ def test_stops_at_the_file_limit() -> None:
         "octocat/shop",
         answerer=answerer,
         related_code=lambda query: [],
+        file_content=lambda path: None,
         settings=ReviewSettings(max_files=2),
     )
 
@@ -149,6 +153,7 @@ def test_no_model_call_when_nothing_is_reviewable() -> None:
         "octocat/shop",
         answerer=answerer,
         related_code=lambda query: [],
+        file_content=lambda path: None,
         settings=ReviewSettings(),
     )
 
@@ -158,3 +163,83 @@ def test_no_model_call_when_nothing_is_reviewable() -> None:
 
 def test_schema_forbids_extra_fields() -> None:
     assert FILE_SCHEMA["additionalProperties"] is False
+
+
+SQL_PATCH = (
+    "@@ -1,1 +1,5 @@\n def find(db, name):\n"
+    "+    query = f\"SELECT * FROM users WHERE name = '{name}'\"\n"
+    "+    rows = db.execute(query).fetchall()\n"
+    "+    total = len(rows)\n"
+    "+    return rows[0], 100 / total"
+)
+SQL_SOURCE = (
+    "def find(db, name):\n"
+    "    query = f\"SELECT * FROM users WHERE name = '{name}'\"\n"
+    "    rows = db.execute(query).fetchall()\n"
+    "    total = len(rows)\n"
+    "    return rows[0], 100 / total\n"
+)
+
+
+def _checks_answering(**flagged: int) -> list[str]:
+    """Replies for the two passes of the model's checks, flagging the given lines."""
+    first = {
+        name: {"reasoning": "r", "problem": name in flagged, "line": flagged.get(name, 2)}
+        for name in CHECKS
+    }
+    confirm = [
+        json.dumps({"reasoning": "r", "problem": True, "line": line}) for line in flagged.values()
+    ]
+    return [json.dumps(first), *confirm]
+
+
+def _review_sql(answerer: FakeAnswerer, content: str | None) -> list[Finding]:
+    result = review_pull_request(
+        _pr(_file("app/users.py", patch=SQL_PATCH)),
+        "octocat/shop",
+        answerer=answerer,
+        related_code=lambda query: [],
+        file_content=lambda path: content,
+        settings=ReviewSettings(),
+    )
+    return result.findings
+
+
+def test_rules_and_model_checks_combine() -> None:
+    answerer = FakeAnswerer()
+    answerer.json_replies = _checks_answering(empty_or_none=5)
+
+    findings = _review_sql(answerer, SQL_SOURCE)
+
+    assert [(f.line, f.severity, f.source) for f in findings] == [
+        (2, "bug", "rule"),
+        (5, "risk", "model"),
+    ]
+    assert findings[0].comment.endswith("(Ruff rule S608)")
+    assert findings[1].comment == CHECKS["empty_or_none"].comment
+
+
+def test_model_comments_next_to_a_rule_finding_are_dropped() -> None:
+    answerer = FakeAnswerer()
+    answerer.json_replies = _checks_answering(empty_or_none=3)  # next to the rule on line 2
+
+    findings = _review_sql(answerer, SQL_SOURCE)
+
+    assert [(f.line, f.source) for f in findings] == [(2, "rule")]
+
+
+def test_without_the_file_only_the_model_checks_run() -> None:
+    answerer = FakeAnswerer()
+    answerer.json_replies = _checks_answering()
+
+    assert _review_sql(answerer, None) == []
+
+
+def test_keeps_the_most_severe_findings_per_file() -> None:
+    findings = [
+        Finding("a.py", 1, "suggestion", "s"),
+        Finding("a.py", 2, "bug", "b"),
+        Finding("a.py", 3, "risk", "r"),
+        Finding("a.py", 2, "risk", "loses to the first finding on line 2", "model"),
+    ]
+    assert [(f.line, f.severity) for f in _best(findings, limit=2)] == [(2, "bug"), (3, "risk")]

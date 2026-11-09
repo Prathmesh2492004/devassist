@@ -105,6 +105,8 @@ class FindingOut(BaseModel):
     line: int
     severity: str  # bug, risk or suggestion
     comment: str
+    # "rule" for a linter rule (reliable), "model" for the AI's judgement (a hint to check)
+    source: str = "model"
 
 
 class ReviewedFileOut(BaseModel):

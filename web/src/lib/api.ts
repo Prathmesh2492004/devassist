@@ -83,7 +83,14 @@ export type Conversation = ConversationSummary & { messages: Message[] };
 export type ReviewStatus = "queued" | "running" | "done" | "failed";
 export type Severity = "bug" | "risk" | "suggestion";
 
-export type Finding = { path: string; line: number; severity: Severity; comment: string };
+export type Finding = {
+  path: string;
+  line: number;
+  severity: Severity;
+  comment: string;
+  /** "rule" for a linter rule (reliable), "model" for the AI's judgement (a hint to check). */
+  source: "rule" | "model";
+};
 
 export type ReviewedFile = {
   path: string;

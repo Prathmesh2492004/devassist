@@ -1,9 +1,18 @@
-"""Review a pull request file by file, with related code from the index as context.
+"""Review a pull request file by file.
 
-Each changed code file gets its own model call, so even a small local model with an 8K
-window sees one whole diff at a time. The model must return JSON matching a schema, and
-every finding is checked against the diff: a comment on a line the diff doesn't show is
-dropped, because GitHub would reject it and it is usually a hallucination.
+Each changed code file goes through two layers:
+
+1. Rules. Ruff's bug and security rules run on the new version of Python files, and only
+   problems on added lines are kept. Precise, instant and free.
+2. A model, in one of two ways:
+   - "checks" (small local models): focused questions about logic bugs, reported only when
+     two independent passes agree. See app/review/checks.py.
+   - "open" (strong models such as Claude): an open-ended review with related code from the
+     index as context.
+
+Every finding is checked against the diff: a comment on a line the diff doesn't show is
+dropped, because GitHub would reject it and it is usually a hallucination. The test set in
+evals/review_cases.py measures what each layer catches.
 """
 
 import json
@@ -16,13 +25,17 @@ from typing import Literal, TypedDict, cast
 from app.ingest.files import detect_language
 from app.qa.answer import Answerer, format_excerpt
 from app.qa.search import SearchHit
-from app.review.diff import commentable_lines, format_for_review, parse_patch
+from app.review.checks import logic_checks
+from app.review.diff import added_lines, commentable_lines, format_for_review, parse_patch
 from app.review.github import ChangedFile, PullRequest
+from app.review.static import check_python
 
 log = logging.getLogger(__name__)
 
 Severity = Literal["bug", "risk", "suggestion"]
 SEVERITIES: tuple[Severity, ...] = ("bug", "risk", "suggestion")
+Source = Literal["rule", "model"]
+Strategy = Literal["checks", "open"]
 
 # Prose and data files: reviewing them costs a model call and rarely finds a real problem.
 SKIPPED_LANGUAGES = {"markdown", "json"}
@@ -82,10 +95,12 @@ SUMMARY_SCHEMA: dict[str, object] = {
 # Finds indexed code related to a query, e.g. hybrid search over the repo's chunks.
 RelatedCode = Callable[[str], Sequence[SearchHit]]
 Progress = Callable[[int, int], None]  # (files reviewed, files to review)
+FileContent = Callable[[str], str | None]  # path -> the file as of the PR's head commit
 
 
 @dataclass(frozen=True)
 class ReviewSettings:
+    strategy: Strategy = "checks"
     max_files: int = 15
     max_findings_per_file: int = 3
     diff_chars: int = 10_000
@@ -99,6 +114,7 @@ class Finding:
     line: int
     severity: Severity
     comment: str
+    source: Source = "model"
 
 
 @dataclass(frozen=True)
@@ -146,6 +162,7 @@ def review_pull_request(
     *,
     answerer: Answerer,
     related_code: RelatedCode,
+    file_content: FileContent,
     settings: ReviewSettings,
     on_progress: Progress | None = None,
 ) -> ReviewResult:
@@ -163,7 +180,11 @@ def review_pull_request(
     for done, file in enumerate(to_review):
         if on_progress:
             on_progress(done, len(to_review))
-        findings = _review_file(pr, file, system, answerer, related_code, settings, result)
+        assert file.patch is not None  # skip_reason filtered these out
+        content = file_content(file.path) if file.path.endswith(".py") else None
+        findings = review_file(
+            pr, file.path, file.patch, content, system, answerer, related_code, settings, result
+        )
         result.findings.extend(findings)
     if on_progress:
         on_progress(len(to_review), len(to_review))
@@ -183,29 +204,59 @@ def _file_review(file: ChangedFile, skipped: str | None) -> FileReview:
     )
 
 
-def _review_file(
+def review_file(
     pr: PullRequest,
-    file: ChangedFile,
+    path: str,
+    patch: str,
+    content: str | None,
     system: str,
     answerer: Answerer,
     related_code: RelatedCode,
     settings: ReviewSettings,
     result: ReviewResult,
 ) -> list[Finding]:
-    assert file.patch is not None  # skip_reason filtered these out
-    lines = parse_patch(file.patch)
+    """Findings for one file: rules first, then the model, best first, at most the limit."""
+    lines = parse_patch(patch)
+    added = added_lines(lines)
     diff = format_for_review(lines)
     if len(diff) > settings.diff_chars:
         diff = diff[: settings.diff_chars] + "\n... (rest of the diff cut off)"
 
-    added = "\n".join(line.text for line in lines if line.kind == "add")
-    hits = related_code(f"{file.path}\n{added}"[:QUERY_CHARS])
-    context = _context(hits, settings)
+    findings = [
+        Finding(path, f.line, f.severity, f"{f.message} (Ruff rule {f.rule})", "rule")
+        for f in (check_python(path, content, added) if content is not None else [])
+    ]
 
-    prompt = _file_prompt(pr, file.path, diff, context)
-    text, usage = answerer.complete_json(system, prompt, FILE_SCHEMA)
-    _add_usage(result, usage.input_tokens, usage.output_tokens)
-    return parse_findings(text, file.path, commentable_lines(lines), settings.max_findings_per_file)
+    if settings.strategy == "checks":
+        flags, usage = logic_checks(answerer, path, diff, added)
+        for done in usage:
+            _add_usage(result, done.input_tokens, done.output_tokens)
+        # Next to a rule finding, the model's generic comment adds nothing the rule didn't say.
+        ruled = {f.line for f in findings}
+        findings += [
+            Finding(path, f.line, "risk", f.comment)
+            for f in flags
+            if all(abs(f.line - line) > 1 for line in ruled)
+        ]
+    else:
+        added_text = "\n".join(line.text for line in lines if line.kind == "add")
+        context = _context(related_code(f"{path}\n{added_text}"[:QUERY_CHARS]), settings)
+        text, done = answerer.complete_json(
+            system, _file_prompt(pr, path, diff, context), FILE_SCHEMA
+        )
+        _add_usage(result, done.input_tokens, done.output_tokens)
+        findings += parse_findings(text, path, commentable_lines(lines), limit=len(lines))
+
+    return _best(findings, settings.max_findings_per_file)
+
+
+def _best(findings: list[Finding], limit: int) -> list[Finding]:
+    """One finding per line (a rule beats the model), most severe first."""
+    by_line: dict[int, Finding] = {}
+    for finding in findings:  # rules come first, so they keep their line
+        by_line.setdefault(finding.line, finding)
+    ranked = sorted(by_line.values(), key=lambda f: (SEVERITIES.index(f.severity), f.line))
+    return sorted(ranked[:limit], key=lambda f: f.line)
 
 
 def _context(hits: Sequence[SearchHit], settings: ReviewSettings) -> str:

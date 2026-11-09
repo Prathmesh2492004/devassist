@@ -81,3 +81,30 @@ def test_network_failure_becomes_a_readable_error() -> None:
     client = GitHubClient(client=httpx.Client(transport=httpx.MockTransport(handler)))
     with pytest.raises(GitHubError, match="Could not reach GitHub"):
         client.pull_request("octocat/shop", 7)
+
+
+def test_reads_a_file_at_a_commit_from_raw_github() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, text="print('hi')\n")
+
+    client = GitHubClient("tok", client=httpx.Client(transport=httpx.MockTransport(handler)))
+
+    assert client.file_text("octocat/shop", "d" * 40, "src/my app.py") == "print('hi')\n"
+    expected = f"https://raw.githubusercontent.com/octocat/shop/{'d' * 40}/src/my%20app.py"
+    assert str(seen[0].url) == expected
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(404),
+        httpx.Response(200, content=b"\xff\xfe\x00binary"),
+        httpx.Response(200, content=b"x" * 600_000),
+    ],
+)
+def test_unreadable_files_give_none(response: httpx.Response) -> None:
+    client = GitHubClient(client=httpx.Client(transport=httpx.MockTransport(lambda r: response)))
+    assert client.file_text("octocat/shop", "abc", "a.py") is None

@@ -21,12 +21,13 @@ dependencies = [
     "tree-sitter-javascript>=0.23",
     "tree-sitter-typescript>=0.23",
     "tree-sitter-java>=0.23",
+    # Also used at runtime: its bug and security rules check pull requests.
+    "ruff>=0.8",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3",
-    "ruff>=0.8",
     "mypy>=1.13",
     "celery-types>=0.22",
 ]
@@ -37,6 +38,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test cases contain planted bugs on purpose.
+"evals/review_cases.py" = ["B006", "F632", "S"]
 
 [tool.ruff]
 line-length = 100

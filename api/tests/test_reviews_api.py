@@ -7,12 +7,17 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings
 from app.models import Repo, RepoStatus, Review, ReviewStatus, User
+from app.review.checks import CHECKS
 from app.review.github import GitHubClient
 from app.review.job import run_review
 from app.routes.repos import LOCAL_USER_GITHUB_ID
 from tests.fakes import FakeAnswerer, FakeEmbedder
 
-PATCH = "@@ -1,2 +1,2 @@\n def charge(card):\n-    return 1\n+    return card.total * 1.03"
+PATCH = (
+    "@@ -1,2 +1,2 @@\n def charge(card, fee):\n-    return card.total\n"
+    "+    return card.total * eval(fee)"
+)
+SOURCE = "def charge(card, fee):\n    return card.total * eval(fee)\n"
 
 
 @pytest.fixture
@@ -101,6 +106,8 @@ def _github(status_code: int = 200) -> GitHubClient:
     def handler(request: httpx.Request) -> httpx.Response:
         if status_code != 200:
             return httpx.Response(status_code)
+        if request.url.host == "raw.githubusercontent.com":  # the file at the head commit
+            return httpx.Response(200, text=SOURCE)
         return httpx.Response(200, json=files if request.url.path.endswith("/files") else pull)
 
     return GitHubClient(client=httpx.Client(transport=httpx.MockTransport(handler)))
@@ -114,13 +121,14 @@ def _queued(db: Session, repo: Repo) -> Review:
     return review
 
 
-def test_job_stores_findings_and_the_diff(
+def test_job_finds_rule_problems_in_the_fetched_file_and_stores_the_diff(
     db: Session, session_factory: sessionmaker[Session], repo: Repo
 ) -> None:
     review = _queued(db, repo)
     answerer = FakeAnswerer()
+    no_problem = {"reasoning": "Fine.", "problem": False, "line": 2}
     answerer.json_replies = [
-        json.dumps({"findings": [{"line": 2, "severity": "risk", "comment": "Float money."}]}),
+        json.dumps(dict.fromkeys(CHECKS, no_problem)),  # the model's checks find nothing
         json.dumps({"summary": "Adds a fee."}),
     ]
 
@@ -137,9 +145,9 @@ def test_job_stores_findings_and_the_diff(
     assert (review.status, review.progress, review.error) == (ReviewStatus.DONE, 100, None)
     assert (review.title, review.author, review.head_sha) == ("Add card fees", "octocat", "d" * 40)
     assert review.summary == "Adds a fee."
-    assert review.findings == [
-        {"path": "src/billing.py", "line": 2, "severity": "risk", "comment": "Float money."}
-    ]
+    [finding] = review.findings
+    assert (finding["line"], finding["severity"], finding["source"]) == (2, "bug", "rule")
+    assert "(Ruff rule S307)" in str(finding["comment"])
     assert review.files[0]["patch"] == PATCH
     assert review.finished_at is not None
 

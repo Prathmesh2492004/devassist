@@ -83,7 +83,10 @@ def run_review(
             full_name,
             answerer=answerer,
             related_code=related_code,
+            file_content=lambda path: github.file_text(full_name, pr.head_sha, path),
             settings=ReviewSettings(
+                # Focused checks suit small local models; strong models get an open review.
+                strategy="open" if settings.answer_provider == "anthropic" else "checks",
                 max_files=settings.review_max_files,
                 max_findings_per_file=settings.review_max_findings_per_file,
             ),
