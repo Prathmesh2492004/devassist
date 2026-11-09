@@ -184,9 +184,14 @@ export function Chat({ repoId }: { repoId: number }) {
   return (
     <div className="flex h-[calc(100dvh-61px)] min-h-[32rem]">
       <aside className="hidden w-64 shrink-0 flex-col gap-3 border-r border-line p-4 md:flex">
-        <Link href="/dashboard" className="text-xs text-muted hover:text-accent">
-          ← Dashboard
-        </Link>
+        <div className="flex items-center gap-3 text-xs">
+          <Link href="/dashboard" className="text-muted hover:text-accent">
+            ← Dashboard
+          </Link>
+          <Link href={`/repos/${repoId}/reviews`} className="text-muted hover:text-accent">
+            PR reviews
+          </Link>
+        </div>
         <div className="grid gap-0.5">
           <span className="text-xs text-muted">Repository</span>
           <span className="truncate font-mono text-sm font-medium" title={repo?.full_name}>

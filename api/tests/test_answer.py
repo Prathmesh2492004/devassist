@@ -259,3 +259,54 @@ def test_select_sources_keeps_best_hits_within_the_character_budget() -> None:
 
     assert select_sources(hits, max_chars=100) == hits[:2]
     assert select_sources(hits, max_chars=10) == hits[:1]  # the top hit is always kept
+
+
+SCHEMA: dict[str, object] = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+
+
+def test_ollama_json_reply_is_constrained_to_the_schema() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            content=_ndjson(
+                {"message": {"content": '{"ok": '}, "done": False},
+                {"message": {"content": "true}"}, "done": False},
+                {"done": True, "prompt_eval_count": 50, "eval_count": 4},
+            ),
+        )
+
+    text, done = _ollama(handler).complete_json("sys", "prompt", SCHEMA)
+
+    assert text == '{"ok": true}'
+    assert done == AnswerDone(model="qwen2.5-coder:3b", input_tokens=50, output_tokens=4)
+    sent = json.loads(requests[0].content)
+    assert sent["format"] == SCHEMA
+    assert sent["options"]["temperature"] == 0.0
+    # no citation example: reviews are not answers
+    assert sent["messages"] == [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "prompt"},
+    ]
+
+
+def test_claude_json_reply_uses_structured_output() -> None:
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        body = _claude_stream(['{"ok": true}'])
+        return httpx2.Response(200, content=body, headers={"content-type": "text/event-stream"})
+
+    text, done = _answerer(handler).complete_json("sys", "prompt", SCHEMA)
+
+    assert text == '{"ok": true}'
+    assert done.output_tokens == 42
+    sent = json.loads(requests[0].content)
+    assert sent["output_config"] == {
+        "effort": "low",
+        "format": {"type": "json_schema", "schema": SCHEMA},
+    }
+    assert sent["messages"] == [{"role": "user", "content": "prompt"}]

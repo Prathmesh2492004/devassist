@@ -45,6 +45,8 @@ class FakeAnswerer:
         self.answer = answer
         self.calls: list[tuple[str, list[BetaMessageParam]]] = []
         self.error: Exception | None = None
+        self.json_calls: list[tuple[str, str]] = []
+        self.json_replies: list[str] = []  # returned in order by complete_json
 
     def stream(
         self, system: str, messages: Sequence[BetaMessageParam]
@@ -56,6 +58,15 @@ class FakeAnswerer:
             if self.error is not None and i == 0:
                 raise self.error
         yield AnswerDone(model=self.model, input_tokens=1000, output_tokens=len(words))
+
+    def complete_json(
+        self, system: str, prompt: str, schema: dict[str, object]
+    ) -> tuple[str, AnswerDone]:
+        self.json_calls.append((system, prompt))
+        if self.error is not None:
+            raise self.error
+        reply = self.json_replies.pop(0) if self.json_replies else '{"summary": "", "findings": []}'
+        return reply, AnswerDone(model=self.model, input_tokens=500, output_tokens=50)
 
 
 class FakeCloner:

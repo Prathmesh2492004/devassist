@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     answer_sources: int = 6
     answer_source_chars: int = 16_000
 
+    # Pull request reviews. Public PRs need no token, but GitHub allows only 60 anonymous API
+    # requests an hour; a free personal access token (no scopes) raises that to 5,000.
+    github_token: SecretStr | None = None
+    review_max_files: int = 15
+    review_max_findings_per_file: int = 3
+
     # Indexing limits: keep one huge or unusual repo from exhausting the worker.
     clone_timeout_seconds: int = 300
     max_file_bytes: int = 300_000

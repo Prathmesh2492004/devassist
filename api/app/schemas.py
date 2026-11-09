@@ -4,7 +4,7 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, computed_field
 
 from app.ingest.git import BRANCH_PATTERN, FULL_NAME_PATTERN
-from app.models import RepoStatus
+from app.models import RepoStatus, ReviewStatus
 
 
 class RepoCreate(BaseModel):
@@ -94,3 +94,50 @@ class ConversationSummary(BaseModel):
 
 class ConversationOut(ConversationSummary):
     messages: list[MessageOut]
+
+
+class ReviewIn(BaseModel):
+    pr_number: int = Field(gt=0, description="Pull request number in the repository")
+
+
+class FindingOut(BaseModel):
+    path: str
+    line: int
+    severity: str  # bug, risk or suggestion
+    comment: str
+
+
+class ReviewedFileOut(BaseModel):
+    path: str
+    status: str
+    additions: int
+    deletions: int
+    patch: str | None
+    skipped: str | None  # why the file wasn't reviewed
+
+
+class ReviewSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    repo_id: int
+    pr_number: int
+    title: str | None
+    author: str | None
+    html_url: str | None
+    head_sha: str | None
+    status: ReviewStatus
+    progress: int
+    error: str | None
+    finding_count: int
+    created_at: datetime
+    finished_at: datetime | None
+
+
+class ReviewOut(ReviewSummary):
+    summary: str | None
+    findings: list[FindingOut]
+    files: list[ReviewedFileOut]
+    model: str | None
+    input_tokens: int
+    output_tokens: int

@@ -15,14 +15,14 @@
 
 </div>
 
-> **Status:** 🚧 Week 3 of 8 complete: ask questions about an indexed repository and get streamed answers that cite the exact files and lines. See the [roadmap](#roadmap).
+> **Status:** 🚧 Week 4 in progress: ask questions about an indexed repository with cited answers, and get an AI review of any public pull request with comments on the exact lines. Posting reviews to GitHub automatically (a GitHub App) comes next. See the [roadmap](#roadmap).
 
 ## Features
 
 | | Feature | Status |
 |---|---|---|
 | 💬 | **Codebase Q&A with citations.** Ask "Where do we validate JWTs?" and get a streamed answer that links to the exact files and lines it used. | ✅ Done |
-| 🔍 | **Automatic PR reviews.** A GitHub App reads each new pull request, pulls related code from the index, and posts inline comments on likely bugs. | Week 4 |
+| 🔍 | **PR reviews.** Enter a pull request and each changed file is reviewed with related code from the index; findings appear inline on the diff. Next: a GitHub App that does this for every new PR and posts the comments on GitHub. | 🚧 In the app; GitHub App next |
 | 📊 | **Quality and cost dashboard.** Tracks answer accuracy on a test set, latency, tokens and cost per question. | Week 8 |
 
 ## Architecture
@@ -146,7 +146,7 @@ Switch with `EMBEDDING_PROVIDER=voyage` and `VOYAGE_API_KEY=...` in `.env`, then
 
 1. **Search two ways.** The question is embedded with the same model as the code and matched against the HNSW index, while its distinctive words (`verify_jwt` becomes `verify | jwt`) go to Postgres full-text search. Each search returns its top 40 chunks for this repo.
 2. **Merge the rankings.** [Reciprocal rank fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) scores each chunk by `1 / (60 + rank)` in each list, so a chunk found by both searches rises to the top without comparing their very different score scales.
-3. **Answer with citations.** The model gets the best chunks (up to 6, and at most 24,000 characters of code) with every line numbered, and is told to back each claim with `[path:start-end]`, citing only code it was shown. The answer streams to the browser over Server-Sent Events.
+3. **Answer with citations.** The model gets the best chunks (up to 6, and at most 16,000 characters of code) with every line numbered, and is told to back each claim with `[path:start-end]`, citing only code it was shown. The answer streams to the browser over Server-Sent Events.
 4. **Check the citations.** The web app turns each citation into a chip. Clicking one opens the cited lines beside the answer, with a GitHub link pinned to the indexed commit, so links never drift as the repo changes. A citation that doesn't match any retrieved chunk is shown struck through.
 5. **Follow up.** Conversations are saved. A follow-up question is searched together with the previous one ("and where is it tested?" means little alone), and the last 6 turns are sent as context.
 
@@ -161,6 +161,17 @@ Switch with `EMBEDDING_PROVIDER=voyage` and `VOYAGE_API_KEY=...` in `.env`, then
 
 Switch with `ANSWER_PROVIDER=anthropic` and `ANTHROPIC_API_KEY=...` in `.env`, then restart the API. Citations that don't match the retrieved code are struck through in the UI, so weaker answers are easy to spot.
 
+## How reviewing works
+
+1. **Fetch the pull request.** The worker reads the PR and its per-file diffs from the GitHub REST API. Public repos need no token; a free `GITHUB_TOKEN` raises GitHub's limit from 60 to 5,000 requests an hour.
+2. **Pick the files.** Only code files are reviewed: deleted files, binaries, lockfiles, docs and JSON are skipped (and listed as skipped), up to 15 files per PR.
+3. **Add context.** For each file, the added lines are used as a search query against the index, and the 3 best chunks from the rest of the repo go to the model, so it can see how the changed code is called.
+4. **Review one file at a time.** Each diff is shown with new-file line numbers. The model must reply with JSON matching a schema (`{line, severity, comment}` findings), enforced by Ollama's structured output or Claude's `json_schema` output format, so a small model can't return malformed text.
+5. **Check every finding.** A finding on a line the diff doesn't show is dropped, since it is usually invented and GitHub would reject it as a review comment. Duplicates go too, and at most 3 findings per file are kept, to keep the signal high.
+6. **Summarize.** A last call writes a short summary from the findings. The page polls while the review runs, then shows the diff with each finding under its line.
+
+With the local model a review takes about 10 to 30 seconds per file on a 4 GB GPU, and costs nothing.
+
 ## API
 
 | Method | Path | What it does |
@@ -174,6 +185,10 @@ Switch with `ANSWER_PROVIDER=anthropic` and `ANTHROPIC_API_KEY=...` in `.env`, t
 | `GET` | `/repos/{id}/conversations` | List conversations about a repo |
 | `GET` | `/conversations/{id}` | A conversation with its messages, sources and token counts |
 | `DELETE` | `/conversations/{id}` | Delete a conversation |
+| `POST` | `/repos/{id}/reviews` | Review a pull request (`{"pr_number": 6096}`); runs in the background |
+| `GET` | `/repos/{id}/reviews` | List reviews of a repo's pull requests, with status and finding counts |
+| `GET` | `/reviews/{id}` | A review with its summary, findings and the reviewed diffs |
+| `DELETE` | `/reviews/{id}` | Delete a review |
 
 Interactive docs are at http://localhost:8000/docs.
 
@@ -185,6 +200,7 @@ devassist/
 │   ├── app/
 │   │   ├── ingest/         Clone, filter, chunk (tree-sitter), embed, store
 │   │   ├── qa/             Hybrid search and cited answers
+│   │   ├── review/         Pull request fetching, diff parsing and file-by-file review
 │   │   ├── routes/         HTTP endpoints
 │   │   ├── models.py       SQLAlchemy models
 │   │   ├── worker.py       Celery app and tasks
@@ -193,7 +209,7 @@ devassist/
 │   └── tests/
 ├── web/                    Next.js frontend
 │   └── src/
-│       ├── app/            Pages (landing, dashboard, chat)
+│       ├── app/            Pages (landing, dashboard, chat, reviews)
 │       └── components/
 ├── infra/                  Terraform for AWS (Week 7)
 ├── docs/                   Screenshots and design notes
@@ -206,7 +222,7 @@ devassist/
 - [x] **Week 1: Foundations.** Monorepo, FastAPI and Next.js skeletons, Docker Compose, CI
 - [x] **Week 2: Ingestion.** Clone repos, chunk code with tree-sitter, store embeddings in pgvector
 - [x] **Week 3: Retrieval.** Hybrid search, streamed answers with citations, saved conversations
-- [ ] **Week 4: GitHub App.** Webhooks and automatic inline PR reviews
+- [ ] **Week 4: PR reviews.** ✅ Review any public PR with inline findings · ⬜ GitHub App: webhooks and posting reviews to GitHub
 - [ ] **Week 5: Product.** GitHub sign-in, multiple repos, rate limiting, incremental re-indexing
 - [ ] **Week 6: Quality.** 50-question evaluation set, accuracy gate in CI, 80% test coverage
 - [ ] **Week 7: Deploy.** AWS with Terraform, HTTPS, CI/CD, monitoring

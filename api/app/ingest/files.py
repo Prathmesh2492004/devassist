@@ -3,7 +3,7 @@
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 
 # Dependencies, build output and tool caches: large, not written by the repo's authors.
 SKIP_DIRS = frozenset(
@@ -56,7 +56,7 @@ class TooManyFilesError(Exception):
     pass
 
 
-def detect_language(path: Path) -> str | None:
+def detect_language(path: PurePath) -> str | None:
     return LANGUAGE_BY_FILENAME.get(path.name) or LANGUAGE_BY_EXTENSION.get(path.suffix.lower())
 
 

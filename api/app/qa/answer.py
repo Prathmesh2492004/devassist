@@ -12,7 +12,7 @@ from typing import Protocol, TypedDict
 
 import anthropic
 import httpx
-from anthropic.types.beta import BetaMessageParam
+from anthropic.types.beta import BetaMessageParam, BetaOutputConfigParam
 
 from app.config import Effort, Settings
 from app.qa.search import SearchHit
@@ -72,6 +72,25 @@ class Answerer(Protocol):
         self, system: str, messages: Sequence[BetaMessageParam]
     ) -> Iterator[AnswerDelta | AnswerDone]: ...
 
+    def complete_json(
+        self, system: str, prompt: str, schema: dict[str, object]
+    ) -> tuple[str, AnswerDone]:
+        """Reply with JSON matching the schema. Returns the JSON text and token usage."""
+        ...
+
+
+def collect(events: Iterator[AnswerDelta | AnswerDone]) -> tuple[str, AnswerDone]:
+    parts: list[str] = []
+    done: AnswerDone | None = None
+    for event in events:
+        if isinstance(event, AnswerDone):
+            done = event
+        else:
+            parts.append(event.text)
+    if done is None:
+        raise AnswerError("The model stopped before finishing.")
+    return "".join(parts), done
+
 
 @dataclass(frozen=True)
 class Turn:
@@ -123,6 +142,23 @@ class ClaudeAnswerer:
     def stream(
         self, system: str, messages: Sequence[BetaMessageParam]
     ) -> Iterator[AnswerDelta | AnswerDone]:
+        return self._stream(system, messages, {"effort": self._effort})
+
+    def complete_json(
+        self, system: str, prompt: str, schema: dict[str, object]
+    ) -> tuple[str, AnswerDone]:
+        output_config: BetaOutputConfigParam = {
+            "effort": self._effort,
+            "format": {"type": "json_schema", "schema": schema},
+        }
+        return collect(self._stream(system, [{"role": "user", "content": prompt}], output_config))
+
+    def _stream(
+        self,
+        system: str,
+        messages: Sequence[BetaMessageParam],
+        output_config: BetaOutputConfigParam,
+    ) -> Iterator[AnswerDelta | AnswerDone]:
         try:
             with self._client.beta.messages.stream(
                 model=self.model,
@@ -130,7 +166,7 @@ class ClaudeAnswerer:
                 system=system,
                 messages=messages,
                 thinking={"type": "adaptive"},
-                output_config={"effort": self._effort},
+                output_config=output_config,
                 betas=[FALLBACK_BETA],
                 fallbacks="default",
             ) as stream:
@@ -212,17 +248,38 @@ class OllamaAnswerer:
     def stream(
         self, system: str, messages: Sequence[BetaMessageParam]
     ) -> Iterator[AnswerDelta | AnswerDone]:
-        payload = {
-            "model": self.model,
-            "stream": True,
-            "messages": [
+        return self._chat(
+            [
                 {"role": "system", "content": system},
                 *CITATION_EXAMPLE,
                 *({"role": m["role"], "content": _plain_text(m["content"])} for m in messages),
             ],
+            temperature=0.2,
+        )
+
+    def complete_json(
+        self, system: str, prompt: str, schema: dict[str, object]
+    ) -> tuple[str, AnswerDone]:
+        # Ollama constrains generation to the schema, so even a small model returns valid JSON.
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+        return collect(self._chat(messages, temperature=0.0, json_schema=schema))
+
+    def _chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float,
+        json_schema: dict[str, object] | None = None,
+    ) -> Iterator[AnswerDelta | AnswerDone]:
+        payload: dict[str, object] = {
+            "model": self.model,
+            "stream": True,
+            "messages": messages,
             # Ollama's default window is small enough to silently cut off the excerpts.
-            "options": {"num_ctx": self._context_tokens, "temperature": 0.2},
+            "options": {"num_ctx": self._context_tokens, "temperature": temperature},
         }
+        if json_schema is not None:
+            payload["format"] = json_schema
         try:
             with self._client.stream("POST", self._url, json=payload) as response:
                 if response.status_code == 404:

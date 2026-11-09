@@ -182,12 +182,20 @@ function RepoRow({ repo, onChange }: { repo: Repo; onChange: () => Promise<void>
         </div>
         <div className="flex gap-2">
           {repo.last_indexed_sha && repo.chunk_count > 0 && (
-            <Link
-              href={`/repos/${repo.id}`}
-              className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white dark:text-background"
-            >
-              Ask questions
-            </Link>
+            <>
+              <Link
+                href={`/repos/${repo.id}`}
+                className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white dark:text-background"
+              >
+                Ask questions
+              </Link>
+              <Link
+                href={`/repos/${repo.id}/reviews`}
+                className="rounded-md border border-line px-3 py-1.5 text-xs hover:border-accent hover:text-accent"
+              >
+                Review PRs
+              </Link>
+            </>
           )}
           <button
             type="button"

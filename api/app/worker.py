@@ -8,6 +8,9 @@ from app.db import SessionLocal
 from app.ingest.embedder import build_embedder
 from app.ingest.git import clone_repo
 from app.ingest.pipeline import index_repository
+from app.qa.answer import build_answerer
+from app.review.github import GitHubClient
+from app.review.job import run_review
 
 settings = get_settings()
 logging.basicConfig(level=logging.INFO)
@@ -34,5 +37,18 @@ def index_repo(repo_id: int) -> None:
         session_factory=SessionLocal,
         embedder_factory=partial(build_embedder, settings),
         clone=partial(clone_repo, timeout=settings.clone_timeout_seconds),
+        settings=settings,
+    )
+
+
+@celery_app.task(name="review_pull_request")
+def review_pull_request(review_id: int) -> None:
+    token = settings.github_token.get_secret_value() if settings.github_token else None
+    run_review(
+        review_id,
+        session_factory=SessionLocal,
+        github=GitHubClient(token),
+        answerer_factory=partial(build_answerer, settings),
+        embedder_factory=partial(build_embedder, settings),
         settings=settings,
     )

@@ -24,6 +24,7 @@ from app.db import get_db, get_session_factory
 from app.main import create_app
 from app.routes.conversations import get_answerer, get_query_embedder
 from app.routes.repos import get_enqueue_index
+from app.routes.reviews import get_enqueue_review
 from tests.fakes import FakeAnswerer, FakeEmbedder
 
 TEST_DATABASE_URL = os.environ.get(
@@ -90,6 +91,12 @@ def enqueued() -> list[int]:
 
 
 @pytest.fixture
+def enqueued_reviews() -> list[int]:
+    """Review ids the API asked to run, instead of sending them to Celery."""
+    return []
+
+
+@pytest.fixture
 def answerer() -> FakeAnswerer:
     return FakeAnswerer()
 
@@ -99,12 +106,14 @@ def client(
     db: Session,
     session_factory: sessionmaker[Session],
     enqueued: list[int],
+    enqueued_reviews: list[int],
     answerer: FakeAnswerer,
 ) -> Iterator[TestClient]:
     app = create_app()
     app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_enqueue_index] = lambda: enqueued.append
+    app.dependency_overrides[get_enqueue_review] = lambda: enqueued_reviews.append
     app.dependency_overrides[get_answerer] = lambda: answerer
     app.dependency_overrides[get_query_embedder] = FakeEmbedder
     with TestClient(app) as c:

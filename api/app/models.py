@@ -42,6 +42,13 @@ class RepoStatus(enum.StrEnum):
         }
 
 
+class ReviewStatus(enum.StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -83,6 +90,9 @@ class Repo(Base):
         back_populates="repo", cascade="all, delete-orphan", passive_deletes=True
     )
     conversations: Mapped[list["Conversation"]] = relationship(
+        back_populates="repo", cascade="all, delete-orphan", passive_deletes=True
+    )
+    reviews: Mapped[list["Review"]] = relationship(
         back_populates="repo", cascade="all, delete-orphan", passive_deletes=True
     )
 
@@ -171,3 +181,39 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
+
+
+class Review(Base):
+    """An AI review of one pull request, as of one head commit."""
+
+    __tablename__ = "reviews"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    repo_id: Mapped[int] = mapped_column(ForeignKey("repos.id", ondelete="CASCADE"), index=True)
+    pr_number: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str | None] = mapped_column(String(500))
+    author: Mapped[str | None] = mapped_column(String(100))
+    html_url: Mapped[str | None] = mapped_column(String(500))
+    head_sha: Mapped[str | None] = mapped_column(String(40))
+    status: Mapped[ReviewStatus] = mapped_column(
+        Enum(ReviewStatus, name="review_status", values_callable=lambda e: [m.value for m in e]),
+        default=ReviewStatus.QUEUED,
+    )
+    progress: Mapped[int] = mapped_column(Integer, default=0)  # 0-100, for the UI
+    error: Mapped[str | None] = mapped_column(Text)
+    summary: Mapped[str | None] = mapped_column(Text)
+    # [{path, line, severity, comment}]
+    findings: Mapped[list[dict[str, object]]] = mapped_column(JSONB, default=list)
+    # [{path, status, additions, deletions, patch, skipped}], so the diff can be shown later
+    files: Mapped[list[dict[str, object]]] = mapped_column(JSONB, default=list)
+    model: Mapped[str | None] = mapped_column(String(100))
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    repo: Mapped[Repo] = relationship(back_populates="reviews")
+
+    @property
+    def finding_count(self) -> int:
+        return len(self.findings or [])

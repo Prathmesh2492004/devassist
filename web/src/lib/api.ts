@@ -80,6 +80,46 @@ export type ConversationSummary = {
 
 export type Conversation = ConversationSummary & { messages: Message[] };
 
+export type ReviewStatus = "queued" | "running" | "done" | "failed";
+export type Severity = "bug" | "risk" | "suggestion";
+
+export type Finding = { path: string; line: number; severity: Severity; comment: string };
+
+export type ReviewedFile = {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  patch: string | null;
+  /** Why the file wasn't reviewed, or null if it was. */
+  skipped: string | null;
+};
+
+export type ReviewSummary = {
+  id: number;
+  repo_id: number;
+  pr_number: number;
+  title: string | null;
+  author: string | null;
+  html_url: string | null;
+  head_sha: string | null;
+  status: ReviewStatus;
+  progress: number;
+  error: string | null;
+  finding_count: number;
+  created_at: string;
+  finished_at: string | null;
+};
+
+export type Review = ReviewSummary & {
+  summary: string | null;
+  findings: Finding[];
+  files: ReviewedFile[];
+  model: string | null;
+  input_tokens: number;
+  output_tokens: number;
+};
+
 export const api = {
   listRepos: () => request<Repo[]>("/repos"),
   getRepo: (id: number) => request<Repo>(`/repos/${id}`),
@@ -91,7 +131,39 @@ export const api = {
     request<ConversationSummary[]>(`/repos/${repoId}/conversations`),
   getConversation: (id: number) => request<Conversation>(`/conversations/${id}`),
   deleteConversation: (id: number) => request<void>(`/conversations/${id}`, { method: "DELETE" }),
+  listReviews: (repoId: number) => request<ReviewSummary[]>(`/repos/${repoId}/reviews`),
+  getReview: (id: number) => request<Review>(`/reviews/${id}`),
+  createReview: (repoId: number, prNumber: number) =>
+    request<ReviewSummary>(`/repos/${repoId}/reviews`, {
+      method: "POST",
+      body: JSON.stringify({ pr_number: prNumber }),
+    }),
+  deleteReview: (id: number) => request<void>(`/reviews/${id}`, { method: "DELETE" }),
 };
+
+const PR_URL = /^(?:https?:\/\/)?github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)(?:[/?#].*)?$/i;
+
+/**
+ * Read a pull request number from "123", "#123" or a GitHub pull request link. A link must
+ * point at this repository. Returns an error message when the input can't be used.
+ */
+export function parsePullRequest(input: string, fullName: string): number | string {
+  const text = input.trim();
+  const plain = /^#?(\d+)$/.exec(text);
+  const url = PR_URL.exec(text);
+  let number: number;
+  if (plain) {
+    number = Number(plain[1]);
+  } else if (url) {
+    if (url[1].toLowerCase() !== fullName.toLowerCase()) {
+      return `That pull request is in ${url[1]}, not ${fullName}.`;
+    }
+    number = Number(url[2]);
+  } else {
+    return "Enter a pull request number, like 5432, or its GitHub link.";
+  }
+  return number > 0 ? number : "Pull request numbers start at 1.";
+}
 
 export type AskEvent =
   | { type: "conversation"; data: { id: number; title: string } }
