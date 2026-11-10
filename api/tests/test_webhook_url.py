@@ -17,11 +17,14 @@ class FakeNetwork:
         self.hostname = hostname
         self.patched: list[dict[str, str]] = []
         self.github_status = 200
+        self.ready = True
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         if request.url.host == "tunnel":
             if self.hostname is None:
                 raise httpx.ConnectError("tunnel isn't running")
+            if request.url.path == "/ready":
+                return httpx.Response(200 if self.ready else 503, json={})
             return httpx.Response(200, json={"hostname": self.hostname})
         assert (request.method, request.url.path) == ("PATCH", "/app/hook/config")
         assert request.headers["Authorization"].startswith("Bearer ")
@@ -97,4 +100,21 @@ def test_does_nothing_without_an_app_or_a_tunnel(tmp_path: Path, settings: Setti
 
     network.hostname = None
     assert WebhookUrlKeeper(settings, network.client()).check() is None
+    assert network.patched == []
+
+
+def test_a_dropped_tunnel_counts_as_no_address(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Seen live: Cloudflare dropped the tunnel, but it still reported its old hostname.
+    network = FakeNetwork()
+    network.ready = False
+    keeper = WebhookUrlKeeper(settings, network.client())
+
+    assert tunnel_hostname(METRICS, client=network.client()) is None
+    assert keeper.check() is None
+    keeper.check()
+
+    warnings = [r for r in caplog.records if "isn't connected" in r.getMessage()]
+    assert len(warnings) == 1  # said once, not every 30 seconds
     assert network.patched == []

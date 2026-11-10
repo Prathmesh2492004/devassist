@@ -15,7 +15,7 @@
 
 </div>
 
-> **Status:** 🚧 Week 4 in progress: ask questions about an indexed repository with cited answers, and get an AI review of any pull request with comments on the exact lines, either from the web app or automatically on every push through a GitHub App. See the [roadmap](#roadmap).
+> **Status:** ✅ Week 4 done: ask questions about an indexed repository with cited answers, and get an AI review of any pull request with comments on the exact lines, either from the web app or automatically on every push through a GitHub App. See the [roadmap](#roadmap).
 
 ## Features
 
@@ -191,6 +191,10 @@ The rules carry most of the weight. The model adds logic bugs such as dividing b
 
 Install the DevAssist GitHub App on a repository and every pull request is reviewed when it opens and again when new commits are pushed. The findings appear on GitHub as one review from `DevAssist[bot]`, with a comment on each line.
 
+<img src="docs/images/github-review.jpg" alt="A DevAssist review posted on a pull request by the DevAssist bot" width="600">
+
+Try it: [devassist-playground pull request #1](https://github.com/Prathmesh2492004/devassist-playground/pull/1) has three planted bugs. The rules caught the SQL injection and the mutable default argument; the local model missed dividing by the length of a possibly empty cart.
+
 ```mermaid
 sequenceDiagram
     participant G as GitHub
@@ -221,7 +225,7 @@ sequenceDiagram
 3. Click **Install the app on GitHub** and pick the repositories to review. Add the same repositories in DevAssist.
 4. Open a pull request. The review appears on GitHub within a few minutes, and on the Reviews page marked "Automatic review".
 
-The quick tunnel gets a new address each time it starts. The API checks it every 30 seconds and updates the app's webhook address through GitHub's API, so nothing needs changing by hand. On a server with a fixed address, set `GITHUB_WEBHOOK_URL` instead.
+The quick tunnel gets a new address each time it starts. The API checks it every 30 seconds and updates the app's webhook address through GitHub's API, so nothing needs changing by hand. Quick tunnels are temporary and Cloudflare can drop one, which happened during testing: the container keeps running but events stop arriving. The API notices (the tunnel reports zero connections) and logs the fix, `docker compose --profile github-app restart tunnel`. On a server with a fixed address, set `GITHUB_WEBHOOK_URL` instead.
 
 ## API
 
@@ -276,7 +280,7 @@ devassist/
 - [x] **Week 1: Foundations.** Monorepo, FastAPI and Next.js skeletons, Docker Compose, CI
 - [x] **Week 2: Ingestion.** Clone repos, chunk code with tree-sitter, store embeddings in pgvector
 - [x] **Week 3: Retrieval.** Hybrid search, streamed answers with citations, saved conversations
-- [ ] **Week 4: PR reviews.** ✅ Review any public PR with inline findings · ✅ Bug rules and checked model findings · 🚧 GitHub App: built and tested, first live run next
+- [x] **Week 4: PR reviews.** ✅ Review any public PR with inline findings · ✅ Bug rules and checked model findings · ✅ GitHub App: reviews every push and comments on GitHub
 - [ ] **Week 5: Product.** GitHub sign-in, multiple repos, rate limiting, incremental re-indexing
 - [ ] **Week 6: Quality.** 50-question evaluation set, accuracy gate in CI, 80% test coverage
 - [ ] **Week 7: Deploy.** AWS with Terraform, HTTPS, CI/CD, monitoring

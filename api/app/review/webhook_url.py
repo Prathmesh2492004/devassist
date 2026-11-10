@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 
 WEBHOOK_PATH = "/webhooks/github"
 CHECK_EVERY_SECONDS = 30
+RESTART_HINT = "docker compose --profile github-app restart tunnel"
 
 
 class _QuickTunnel(TypedDict):
@@ -29,8 +30,14 @@ class _QuickTunnel(TypedDict):
 
 
 def tunnel_hostname(metrics_url: str, *, client: httpx.Client) -> str | None:
-    """The quick tunnel's public hostname, or None while it isn't running."""
+    """The quick tunnel's public hostname, or None while it isn't connected.
+
+    A quick tunnel can be dropped by Cloudflare. cloudflared then keeps running and keeps
+    reporting the old hostname, so /ready (connections to Cloudflare) is checked first.
+    """
     try:
+        if client.get(f"{metrics_url}/ready", timeout=5).status_code != 200:
+            return None
         response = client.get(f"{metrics_url}/quicktunnel", timeout=5)
         data: _QuickTunnel = response.json()
     except (httpx.HTTPError, ValueError):
@@ -74,13 +81,24 @@ class WebhookUrlKeeper:
         self._settings = settings
         self._client = client
         self.current: str | None = None
+        self._warned_down = False
 
     def check(self) -> str | None:
         credentials = load_credentials(self._settings)
         if credentials is None:
             return None
         url = public_webhook_url(self._settings, client=self._client)
-        if url is None or url == self.current:
+        if url is None:
+            if not self._warned_down:
+                log.warning(
+                    "The tunnel isn't connected, so GitHub can't deliver events. "
+                    "Start or restart it with: %s",
+                    RESTART_HINT,
+                )
+                self._warned_down = True
+            return None
+        self._warned_down = False
+        if url == self.current:
             return url
         try:
             point_app_at(credentials, url, client=self._client)

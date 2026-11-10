@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import logging
 from collections.abc import AsyncIterator
 
 import httpx
@@ -9,6 +10,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.review.webhook_url import WebhookUrlKeeper, keep_webhook_url_current
 from app.routes import conversations, github_app, health, repos, reviews, webhooks
+
+logging.basicConfig(level=logging.INFO)
+# httpx logs every request at INFO; the tunnel check alone would print one every 30 seconds.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 @contextlib.asynccontextmanager

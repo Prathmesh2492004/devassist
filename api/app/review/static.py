@@ -9,10 +9,12 @@ old problems in untouched code are not the author's doing.
 import json
 import logging
 import subprocess
-import sys
 from dataclasses import dataclass
+from functools import cache
 from pathlib import PurePosixPath
 from typing import Literal, TypedDict
+
+from ruff.__main__ import find_ruff_bin  # type: ignore[import-untyped]
 
 log = logging.getLogger(__name__)
 
@@ -63,6 +65,9 @@ PYTHON_SUFFIXES = (".py", ".pyi")
 # Flask PRs: test secret keys were the only rule findings across 53 changed files.
 SECURITY_PREFIX = "S"
 TIMEOUT_SECONDS = 30
+# A failed launch is retried once: in Docker on Windows the mounted code folder occasionally
+# fails a file-system call, which was seen to crash one Ruff run in a real review.
+ATTEMPTS = 2
 
 
 @dataclass(frozen=True)
@@ -82,6 +87,12 @@ class _Diagnostic(TypedDict):
     code: str | None
     message: str
     location: _Location
+
+
+@cache
+def _ruff_bin() -> str:
+    # The binary itself, not `python -m ruff`, which first searches the working directory.
+    return str(find_ruff_bin())
 
 
 def severity_for(code: str) -> Severity | None:
@@ -108,24 +119,27 @@ def check_python(path: str, source: str, added: set[int]) -> list[StaticFinding]
         return []
     rules = [r for r in RULES if not (is_test_file(path) and r.startswith(SECURITY_PREFIX))]
     command = [
-        sys.executable, "-m", "ruff", "check", "-",
+        _ruff_bin(), "check", "-",
         "--isolated", "--no-cache", "--exit-zero", "--output-format", "json",
         "--target-version", "py312", "--stdin-filename", path,
         "--select", ",".join(rules),
     ]  # fmt: skip
-    try:
-        result = subprocess.run(
-            command,
-            input=source,
-            capture_output=True,
-            encoding="utf-8",  # not the OS default, which on Windows can't encode most text
-            timeout=TIMEOUT_SECONDS,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        log.warning("Ruff could not check %s: %s", path, exc)
-        return []
-    if result.returncode != 0:
-        log.warning("Ruff failed on %s: %s", path, result.stderr[:500])
+    for attempt in range(1, ATTEMPTS + 1):
+        try:
+            result = subprocess.run(
+                command,
+                input=source,
+                capture_output=True,
+                encoding="utf-8",  # not the OS default, which on Windows can't encode most text
+                timeout=TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            log.warning("Ruff could not check %s (attempt %s): %s", path, attempt, exc)
+            continue
+        if result.returncode == 0:
+            break
+        log.warning("Ruff failed on %s (attempt %s): %s", path, attempt, result.stderr[-1000:])
+    else:
         return []
 
     diagnostics: list[_Diagnostic] = json.loads(result.stdout or "[]")

@@ -1,5 +1,8 @@
 """Rule-based checks. These run the real Ruff binary, which takes milliseconds."""
 
+import subprocess
+from typing import Any
+
 import pytest
 
 from app.review.static import RULES, StaticFinding, check_python, is_test_file, severity_for
@@ -80,3 +83,27 @@ def test_security_rules_are_skipped_in_tests_but_bug_rules_are_not() -> None:
         "S105",
         "B006",
     ]
+
+
+def test_a_failed_ruff_launch_is_retried_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_run = subprocess.run
+    calls: list[object] = []
+
+    def flaky_run(*args: Any, **kwargs: Any) -> Any:
+        calls.append(args)
+        if len(calls) == 1:  # like the mounted folder failing a file-system call
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="OSError")
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", flaky_run)
+
+    assert [f.rule for f in check_python("app/users.py", SOURCE, added={5})] == ["S608"]
+    assert len(calls) == 2
+
+
+def test_gives_up_after_the_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken_run(*args: Any, **kwargs: Any) -> Any:
+        return subprocess.CompletedProcess(args, 2, stdout="", stderr="crash")
+
+    monkeypatch.setattr(subprocess, "run", broken_run)
+    assert check_python("app/users.py", SOURCE, added={5}) == []
