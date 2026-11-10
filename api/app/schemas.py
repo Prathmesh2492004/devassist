@@ -132,6 +132,10 @@ class ReviewSummary(BaseModel):
     progress: int
     error: str | None
     finding_count: int
+    # True when the GitHub App started it; github_review_url links to the posted comments.
+    automatic: bool
+    github_review_url: str | None
+    post_error: str | None
     created_at: datetime
     finished_at: datetime | None
 

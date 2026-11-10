@@ -1,6 +1,7 @@
 # Secrets
 .env
 *.pem
+.secrets/
 
 # Python
 .venv/

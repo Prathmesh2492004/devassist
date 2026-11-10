@@ -287,6 +287,11 @@ function ReviewView({ review }: { review: Review }) {
               Open on GitHub ↗
             </a>
           )}
+          {review.automatic && (
+            <span title="Started by the DevAssist GitHub App when commits were pushed">
+              Automatic review
+            </span>
+          )}
         </p>
       </header>
 
@@ -324,6 +329,17 @@ function ReviewView({ review }: { review: Review }) {
               {` · ${(review.input_tokens + review.output_tokens).toLocaleString()} tokens`}
             </span>
           </div>
+          {review.github_review_url && (
+            <a
+              href={review.github_review_url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-sm text-accent hover:underline"
+            >
+              See the comments posted on GitHub ↗
+            </a>
+          )}
+          {review.post_error && <p className="text-sm text-bad">{review.post_error}</p>}
         </section>
       )}
 

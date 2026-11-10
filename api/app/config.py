@@ -49,6 +49,23 @@ class Settings(BaseSettings):
     review_max_files: int = 15
     review_max_findings_per_file: int = 3
 
+    # The GitHub App that reviews new pull requests and comments on them. The setup page at
+    # /github-app/setup creates the app and saves its ID, key and secret to github_app_file;
+    # the three variables below are for an app made by hand instead.
+    github_app_id: str | None = None
+    github_app_private_key_path: str | None = None
+    github_webhook_secret: SecretStr | None = None
+    github_app_file: str = ".secrets/github-app.json"
+    # Where GitHub sends events. GitHub can't reach localhost, so locally a Cloudflare quick
+    # tunnel gives the API a public address; its metrics port reports what that address is.
+    # On a server with a fixed address, set GITHUB_WEBHOOK_URL to .../webhooks/github instead.
+    github_webhook_url: str | None = None
+    tunnel_metrics_url: str | None = None
+    # This API's address as your browser sees it, for GitHub to send you back after setup.
+    public_api_url: str = "http://localhost:8000"
+    # The app's homepage on GitHub's app page.
+    github_app_homepage: str = "https://github.com/Prathmesh2492004/devassist"
+
     # Indexing limits: keep one huge or unusual repo from exhausting the worker.
     clone_timeout_seconds: int = 300
     max_file_bytes: int = 300_000

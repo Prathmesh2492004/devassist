@@ -66,6 +66,7 @@ services:
       DATABASE_URL: postgresql+psycopg://devassist:devassist@db:5432/devassist
       REDIS_URL: redis://redis:6379/0
       OLLAMA_URL: http://ollama:11434
+      TUNNEL_METRICS_URL: http://tunnel:2000  # see the tunnel service below
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     ports:
       - "8000:8000"
@@ -98,6 +99,19 @@ services:
         condition: service_healthy
       ollama-pull:
         condition: service_completed_successfully
+
+  # A public HTTPS address for the API, so GitHub can deliver webhook events to this machine.
+  # A Cloudflare "quick tunnel": free, no account, and it passes the body through byte for
+  # byte, which signature checks need. Its address changes on every start; the API reads it
+  # from the metrics port and points the GitHub App at it.
+  # Starts only with: docker compose --profile github-app up -d
+  tunnel:
+    image: cloudflare/cloudflared:2026.9.3
+    profiles: ["github-app"]
+    command: tunnel --no-autoupdate --metrics 0.0.0.0:2000 --url http://api:8000
+    restart: unless-stopped
+    depends_on:
+      - api
 
   web:
     build: ./web

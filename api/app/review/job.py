@@ -1,6 +1,7 @@
 """Run one review in the background: fetch the PR → review each file → store the findings.
 
-Progress goes to the reviews row as each file finishes, so the page can show it live.
+Progress goes to the reviews row as each file finishes, so the page can show it live. When
+the GitHub App started the review, the findings are also posted on the pull request.
 """
 
 import logging
@@ -15,12 +16,16 @@ from app.ingest.embedder import Embedder, EmbeddingError
 from app.models import Review, ReviewStatus
 from app.qa.answer import Answerer, AnswerError
 from app.qa.search import SearchHit, hybrid_search
-from app.review.github import GitHubClient, GitHubError
-from app.review.reviewer import ReviewSettings, review_pull_request
+from app.review.github import GitHubClient, GitHubError, PullRequest
+from app.review.publish import comment_for, review_body
+from app.review.reviewer import ReviewResult, ReviewSettings, review_pull_request
 
 log = logging.getLogger(__name__)
 
 SessionFactory = Callable[[], Session]
+# Builds the GitHub client for a review: anonymous (or GITHUB_TOKEN) for reviews started on
+# the page, signed in as the app's installation for reviews started by a webhook.
+GitHubFactory = Callable[[int | None], GitHubClient]
 
 PROGRESS_FETCHED = 5
 PROGRESS_REVIEWED = 95  # the summary takes the rest
@@ -33,7 +38,7 @@ def run_review(
     review_id: int,
     *,
     session_factory: SessionFactory,
-    github: GitHubClient,
+    github_factory: GitHubFactory,
     answerer_factory: Callable[[], Answerer],
     embedder_factory: Callable[[], Embedder],
     settings: Settings,
@@ -44,6 +49,7 @@ def run_review(
             log.warning("Review %s was deleted before it started", review_id)
             return
         repo_id, full_name, number = review.repo_id, review.repo.full_name, review.pr_number
+        installation_id = review.installation_id
 
     def update(**fields: object) -> None:
         with session_factory() as db:
@@ -56,6 +62,7 @@ def run_review(
 
     update(status=ReviewStatus.RUNNING, progress=0, error=None)
     try:
+        github = github_factory(installation_id)
         pr = github.pull_request(full_name, number)
         update(
             title=pr.title[:500],
@@ -116,3 +123,32 @@ def run_review(
         output_tokens=result.output_tokens,
         finished_at=datetime.now(UTC),
     )
+    if installation_id is not None:
+        _post(github, full_name, pr, result, update)
+
+
+def _post(
+    github: GitHubClient,
+    full_name: str,
+    pr: PullRequest,
+    result: ReviewResult,
+    update: Callable[..., None],
+) -> None:
+    """Comment on the PR. A failure here keeps the review; it's shown on the page instead."""
+    try:
+        url = github.post_review(
+            full_name,
+            pr.number,
+            commit_sha=pr.head_sha,
+            body=review_body(result, pr.head_sha),
+            comments=[comment_for(f) for f in result.findings],
+        )
+    except GitHubError as exc:
+        log.info("Posting review of %s#%s failed: %s", full_name, pr.number, exc)
+        update(post_error=f"Couldn't post on GitHub: {exc}")
+        return
+    except Exception:
+        log.exception("Posting review of %s#%s crashed", full_name, pr.number)
+        update(post_error="Couldn't post on GitHub.")
+        return
+    update(github_review_url=url, post_error=None)

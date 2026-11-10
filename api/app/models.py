@@ -187,6 +187,7 @@ class Review(Base):
     """An AI review of one pull request, as of one head commit."""
 
     __tablename__ = "reviews"
+    __table_args__ = (Index("ix_reviews_repo_pr_sha", "repo_id", "pr_number", "head_sha"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     repo_id: Mapped[int] = mapped_column(ForeignKey("repos.id", ondelete="CASCADE"), index=True)
@@ -209,6 +210,10 @@ class Review(Base):
     model: Mapped[str | None] = mapped_column(String(100))
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    # Set when the GitHub App started the review: the findings are then posted on the PR.
+    installation_id: Mapped[int | None] = mapped_column(BigInteger)
+    github_review_url: Mapped[str | None] = mapped_column(String(500))
+    post_error: Mapped[str | None] = mapped_column(Text)  # the review is still kept
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -217,3 +222,7 @@ class Review(Base):
     @property
     def finding_count(self) -> int:
         return len(self.findings or [])
+
+    @property
+    def automatic(self) -> bool:
+        return self.installation_id is not None

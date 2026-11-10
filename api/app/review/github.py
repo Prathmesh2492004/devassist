@@ -40,6 +40,13 @@ class PullRequest:
     files: list[ChangedFile]
 
 
+@dataclass(frozen=True)
+class ReviewComment:
+    path: str
+    line: int  # in the new version of the file
+    body: str
+
+
 class GitHubError(Exception):
     """A failure whose message is safe and useful to show the user."""
 
@@ -118,7 +125,10 @@ class GitHubClient:
         """A file's text at a commit, or None if it can't be read (missing, binary, huge)."""
         url = f"{GITHUB_RAW}/{full_name}/{ref}/{quote(path)}"
         try:
-            response = self._client.get(url, headers={"User-Agent": self._headers["User-Agent"]})
+            # The token matters for private repositories, which the GitHub App can read.
+            keep = ("User-Agent", "Authorization")
+            headers = {k: v for k, v in self._headers.items() if k in keep}
+            response = self._client.get(url, headers=headers)
         except httpx.TransportError:
             return None
         if response.status_code != 200 or len(response.content) > MAX_FILE_BYTES:
@@ -127,6 +137,46 @@ class GitHubClient:
             return response.content.decode("utf-8")
         except UnicodeDecodeError:
             return None
+
+    def post_review(
+        self,
+        full_name: str,
+        number: int,
+        *,
+        commit_sha: str,
+        body: str,
+        comments: list[ReviewComment],
+    ) -> str:
+        """Post a review with comments on lines of the diff. Returns the review's web URL.
+
+        GitHub refuses the whole review (422) if any comment is on a line outside the diff,
+        for example when the PR changed again since it was read. Then the comments go into
+        the review's text instead, so nothing is lost.
+        """
+        payload: dict[str, object] = {
+            "commit_id": commit_sha,
+            "event": "COMMENT",  # never approve or block: a person makes that call
+            "body": body,
+            "comments": [
+                {"path": c.path, "line": c.line, "side": "RIGHT", "body": c.body} for c in comments
+            ],
+        }
+        path = f"/repos/{full_name}/pulls/{number}/reviews"
+        response = self._send("POST", path, json=payload)
+        if response.status_code == 422 and comments:
+            payload["comments"] = []
+            listed = "\n\n".join(f"**`{c.path}` line {c.line}**: {c.body}" for c in comments)
+            payload["body"] = f"{body}\n\n{listed}"
+            response = self._send("POST", path, json=payload)
+        self._raise_for_status(response, not_found=f"Pull request #{number} wasn't found.")
+        url: str = response.json()["html_url"]
+        return url
+
+    def _send(self, method: str, path: str, *, json: object) -> httpx.Response:
+        try:
+            return self._client.request(method, GITHUB_API + path, json=json, headers=self._headers)
+        except httpx.TransportError as exc:
+            raise GitHubError("Could not reach GitHub. Check your connection.") from exc
 
     def _get(
         self,
@@ -139,8 +189,14 @@ class GitHubClient:
             response = self._client.get(GITHUB_API + path, params=params, headers=self._headers)
         except httpx.TransportError as exc:
             raise GitHubError("Could not reach GitHub. Check your connection.") from exc
+        self._raise_for_status(
+            response, not_found=f"{not_found} Only public repositories can be reviewed."
+        )
+        return response.json()
+
+    def _raise_for_status(self, response: httpx.Response, *, not_found: str) -> None:
         if response.status_code == 404:
-            raise GitHubError(f"{not_found} Only public repositories can be reviewed.")
+            raise GitHubError(not_found)
         if (
             response.status_code in (403, 429)
             and response.headers.get("x-ratelimit-remaining") == "0"
@@ -148,9 +204,10 @@ class GitHubClient:
             raise GitHubError(_rate_limit_message(response))
         if response.status_code == 401:
             raise GitHubError("GitHub rejected GITHUB_TOKEN. Create a new token or remove it.")
+        if response.status_code == 403:
+            raise GitHubError("GitHub refused: the token isn't allowed to do this.")
         if response.is_error:
             raise GitHubError(f"GitHub returned an error ({response.status_code}).")
-        return response.json()
 
 
 def _rate_limit_message(response: httpx.Response) -> str:

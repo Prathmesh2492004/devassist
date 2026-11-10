@@ -1,7 +1,9 @@
+import json
+
 import httpx
 import pytest
 
-from app.review.github import FILES_PER_PAGE, GitHubClient, GitHubError
+from app.review.github import FILES_PER_PAGE, GitHubClient, GitHubError, ReviewComment
 
 PULL = {
     "number": 7,
@@ -108,3 +110,72 @@ def test_reads_a_file_at_a_commit_from_raw_github() -> None:
 def test_unreadable_files_give_none(response: httpx.Response) -> None:
     client = GitHubClient(client=httpx.Client(transport=httpx.MockTransport(lambda r: response)))
     assert client.file_text("octocat/shop", "abc", "a.py") is None
+
+
+def test_raw_files_are_read_with_the_token_so_private_repos_work() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, text="x = 1\n")
+
+    GitHubClient("tok", client=httpx.Client(transport=httpx.MockTransport(handler))).file_text(
+        "octocat/shop", "abc", "a.py"
+    )
+    assert seen[0].headers["Authorization"] == "Bearer tok"
+
+
+COMMENTS = [ReviewComment("src/a.py", 3, "**Bug** · Rule check\n\nUses eval.")]
+REVIEW_URL = "https://github.com/octocat/shop/pull/7#pullrequestreview-1"
+
+
+def test_posts_a_review_with_a_comment_on_each_line() -> None:
+    sent: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/repos/octocat/shop/pulls/7/reviews"
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={"html_url": REVIEW_URL})
+
+    client = GitHubClient("tok", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    url = client.post_review(
+        "octocat/shop", 7, commit_sha="d" * 40, body="Looks fine.", comments=COMMENTS
+    )
+
+    assert url == REVIEW_URL
+    assert sent == [
+        {
+            "commit_id": "d" * 40,
+            "event": "COMMENT",
+            "body": "Looks fine.",
+            "comments": [
+                {"path": "src/a.py", "line": 3, "side": "RIGHT", "body": COMMENTS[0].body}
+            ],
+        }
+    ]
+
+
+def test_comments_go_into_the_text_when_github_refuses_a_line() -> None:
+    sent: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        if sent[-1]["comments"]:
+            return httpx.Response(422, json={"message": "line must be part of the diff"})
+        return httpx.Response(200, json={"html_url": REVIEW_URL})
+
+    client = GitHubClient("tok", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    client.post_review("octocat/shop", 7, commit_sha="d" * 40, body="Summary.", comments=COMMENTS)
+
+    assert len(sent) == 2
+    assert sent[1]["comments"] == []
+    assert sent[1]["body"] == f"Summary.\n\n**`src/a.py` line 3**: {COMMENTS[0].body}"
+
+
+def test_posting_without_permission_is_a_readable_error() -> None:
+    client = GitHubClient(
+        "tok", client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(403)))
+    )
+    with pytest.raises(GitHubError, match="isn't allowed"):
+        client.post_review("octocat/shop", 7, commit_sha="d", body="x", comments=[])

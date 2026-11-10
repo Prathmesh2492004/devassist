@@ -1,4 +1,5 @@
 import json
+from typing import Any
 
 import httpx
 import pytest
@@ -18,6 +19,8 @@ PATCH = (
     "+    return card.total * eval(fee)"
 )
 SOURCE = "def charge(card, fee):\n    return card.total * eval(fee)\n"
+
+POSTED_URL = "https://github.com/octocat/shop/pull/7#pullrequestreview-1"
 
 
 @pytest.fixture
@@ -91,7 +94,9 @@ def test_hides_other_users_reviews(client: TestClient, db: Session) -> None:
     assert client.delete(f"/reviews/{review.id}").status_code == 404
 
 
-def _github(status_code: int = 200) -> GitHubClient:
+def _github(
+    status_code: int = 200, posted: list[dict[str, Any]] | None = None, post_status: int = 200
+) -> GitHubClient:
     pull = {
         "number": 7,
         "title": "Add card fees",
@@ -106,6 +111,10 @@ def _github(status_code: int = 200) -> GitHubClient:
     def handler(request: httpx.Request) -> httpx.Response:
         if status_code != 200:
             return httpx.Response(status_code)
+        if request.method == "POST":  # the review posted on the PR
+            if posted is not None:
+                posted.append(json.loads(request.content))
+            return httpx.Response(post_status, json={"html_url": POSTED_URL})
         if request.url.host == "raw.githubusercontent.com":  # the file at the head commit
             return httpx.Response(200, text=SOURCE)
         return httpx.Response(200, json=files if request.url.path.endswith("/files") else pull)
@@ -135,7 +144,7 @@ def test_job_finds_rule_problems_in_the_fetched_file_and_stores_the_diff(
     run_review(
         review.id,
         session_factory=session_factory,
-        github=_github(),
+        github_factory=lambda _: _github(),
         answerer_factory=lambda: answerer,
         embedder_factory=FakeEmbedder,
         settings=Settings(),
@@ -160,7 +169,7 @@ def test_job_records_a_readable_failure(
     run_review(
         review.id,
         session_factory=session_factory,
-        github=_github(status_code=404),
+        github_factory=lambda _: _github(status_code=404),
         answerer_factory=FakeAnswerer,
         embedder_factory=FakeEmbedder,
         settings=Settings(),
@@ -169,3 +178,87 @@ def test_job_records_a_readable_failure(
     db.refresh(review)
     assert review.status == ReviewStatus.FAILED
     assert review.error is not None and "wasn't found in octocat/shop" in review.error
+
+
+def _run_app_review(
+    db: Session,
+    session_factory: sessionmaker[Session],
+    repo: Repo,
+    github: GitHubClient,
+    installations: list[int | None],
+) -> Review:
+    review = _queued(db, repo)
+    review.installation_id = 555
+    db.commit()
+    answerer = FakeAnswerer()
+    no_problem = {"reasoning": "Fine.", "problem": False, "line": 2}
+    answerer.json_replies = [
+        json.dumps(dict.fromkeys(CHECKS, no_problem)),
+        json.dumps({"summary": "Adds a fee."}),
+    ]
+
+    def github_factory(installation_id: int | None) -> GitHubClient:
+        installations.append(installation_id)
+        return github
+
+    run_review(
+        review.id,
+        session_factory=session_factory,
+        github_factory=github_factory,
+        answerer_factory=lambda: answerer,
+        embedder_factory=FakeEmbedder,
+        settings=Settings(),
+    )
+    db.refresh(review)
+    return review
+
+
+def test_job_posts_the_findings_on_the_pr_when_the_app_started_it(
+    db: Session, session_factory: sessionmaker[Session], repo: Repo
+) -> None:
+    posted: list[dict[str, Any]] = []
+    installations: list[int | None] = []
+
+    review = _run_app_review(db, session_factory, repo, _github(posted=posted), installations)
+
+    assert installations == [555]  # signed in as the app's installation
+    assert review.status == ReviewStatus.DONE
+    assert (review.github_review_url, review.post_error) == (POSTED_URL, None)
+    [payload] = posted
+    assert payload["commit_id"] == "d" * 40
+    assert payload["body"].startswith("### DevAssist review of `ddddddd`")
+    [comment] = payload["comments"]
+    assert (comment["path"], comment["line"], comment["side"]) == ("src/billing.py", 2, "RIGHT")
+    assert comment["body"].startswith("**Bug** · Rule check")
+
+
+def test_a_failed_post_keeps_the_review_and_says_why(
+    db: Session, session_factory: sessionmaker[Session], repo: Repo
+) -> None:
+    review = _run_app_review(db, session_factory, repo, _github(post_status=403), [])
+
+    assert review.status == ReviewStatus.DONE
+    assert len(review.findings) == 1
+    assert review.github_review_url is None
+    assert review.post_error is not None and "Couldn't post on GitHub" in review.post_error
+
+
+def test_reviews_started_on_the_page_are_not_posted(
+    db: Session, session_factory: sessionmaker[Session], repo: Repo
+) -> None:
+    posted: list[dict[str, Any]] = []
+    review = _queued(db, repo)
+    answerer = FakeAnswerer()
+    answerer.json_replies = [json.dumps({}), json.dumps({"summary": "Adds a fee."})]
+
+    run_review(
+        review.id,
+        session_factory=session_factory,
+        github_factory=lambda _: _github(posted=posted),
+        answerer_factory=lambda: answerer,
+        embedder_factory=FakeEmbedder,
+        settings=Settings(),
+    )
+
+    db.refresh(review)
+    assert (review.status, review.automatic, posted) == (ReviewStatus.DONE, False, [])

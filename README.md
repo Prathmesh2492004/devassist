@@ -15,14 +15,14 @@
 
 </div>
 
-> **Status:** 🚧 Week 4 in progress: ask questions about an indexed repository with cited answers, and get an AI review of any public pull request with comments on the exact lines. Posting reviews to GitHub automatically (a GitHub App) comes next. See the [roadmap](#roadmap).
+> **Status:** 🚧 Week 4 in progress: ask questions about an indexed repository with cited answers, and get an AI review of any pull request with comments on the exact lines, either from the web app or automatically on every push through a GitHub App. See the [roadmap](#roadmap).
 
 ## Features
 
 | | Feature | Status |
 |---|---|---|
 | 💬 | **Codebase Q&A with citations.** Ask "Where do we validate JWTs?" and get a streamed answer that links to the exact files and lines it used. | ✅ Done |
-| 🔍 | **PR reviews.** Enter a pull request and each changed file is reviewed with related code from the index; findings appear inline on the diff. Next: a GitHub App that does this for every new PR and posts the comments on GitHub. | 🚧 In the app; GitHub App next |
+| 🔍 | **PR reviews.** Each changed file is checked by bug and security rules plus a model, and findings appear on the exact lines. Start one from the web app, or install the GitHub App and every new commit on a PR is reviewed and commented on automatically. | ✅ Done |
 | 📊 | **Quality and cost dashboard.** Tracks answer accuracy on a test set, latency, tokens and cost per question. | Week 8 |
 
 ## Architecture
@@ -37,7 +37,8 @@ flowchart LR
     R --> C[Celery workers]
     C --> P
     C --> L[Claude API]
-    C --> O[Ollama: local embedding model]
+    C --> O[Ollama: local models]
+    C -- review comments --> GHAPI[GitHub API]
     A --> L
 ```
 
@@ -186,6 +187,42 @@ Switch with `ANSWER_PROVIDER=anthropic` and `ANTHROPIC_API_KEY=...` in `.env`, t
 
 The rules carry most of the weight. The model adds logic bugs such as dividing by the length of an empty list, but still misses an inverted permission check and a missing `None` check, and sometimes flags clean code, so its findings are labelled "AI check". With the local model a review takes about 10 to 30 seconds per file on a 4 GB GPU, and costs nothing.
 
+## Automatic reviews on GitHub
+
+Install the DevAssist GitHub App on a repository and every pull request is reviewed when it opens and again when new commits are pushed. The findings appear on GitHub as one review from `DevAssist[bot]`, with a comment on each line.
+
+```mermaid
+sequenceDiagram
+    participant G as GitHub
+    participant T as Cloudflare tunnel
+    participant A as API
+    participant W as Worker
+    G->>T: pull_request event, signed with the webhook secret
+    T->>A: same bytes
+    A->>A: check the signature, skip drafts, repeats and unknown repos
+    A-->>G: 202 Accepted (within GitHub's 10 second limit)
+    A->>W: queue the review
+    W->>G: sign in as the app (JWT, then an installation token)
+    W->>G: read the PR, review it, post one review with line comments
+```
+
+- **Every event is verified.** GitHub signs each event with an HMAC of the body. Anything without a valid signature is rejected before it is read.
+- **Each commit is reviewed once.** GitHub resends events it thinks were lost, so a review of the same commit is never queued twice. A failed review can be retried.
+- **It comments, never approves or blocks.** A person decides whether to merge.
+- **Comments never get lost.** If GitHub refuses a line comment (the PR changed in the meantime), the findings go into the review text instead. If posting fails, the review is kept and the page says why.
+
+### Set it up (free, about two minutes)
+
+1. Start the tunnel, which gives the API a public HTTPS address. It's a free Cloudflare quick tunnel and needs no account:
+   ```bash
+   docker compose --profile github-app up -d
+   ```
+2. Open http://localhost:8000/github-app/setup and click **Create on GitHub**. GitHub shows the app's permissions (read code, write pull request comments) and sends you back. The app's private key and webhook secret are saved in `api/.secrets/`, which git ignores, so no keys are copied by hand.
+3. Click **Install the app on GitHub** and pick the repositories to review. Add the same repositories in DevAssist.
+4. Open a pull request. The review appears on GitHub within a few minutes, and on the Reviews page marked "Automatic review".
+
+The quick tunnel gets a new address each time it starts. The API checks it every 30 seconds and updates the app's webhook address through GitHub's API, so nothing needs changing by hand. On a server with a fixed address, set `GITHUB_WEBHOOK_URL` instead.
+
 ## API
 
 | Method | Path | What it does |
@@ -203,6 +240,8 @@ The rules carry most of the weight. The model adds logic bugs such as dividing b
 | `GET` | `/repos/{id}/reviews` | List reviews of a repo's pull requests, with status and finding counts |
 | `GET` | `/reviews/{id}` | A review with its summary, findings and the reviewed diffs |
 | `DELETE` | `/reviews/{id}` | Delete a review |
+| `POST` | `/webhooks/github` | Receives GitHub App events (signature required) and queues reviews |
+| `GET` | `/github-app/setup` | Creates the GitHub App through GitHub's manifest flow |
 
 Interactive docs are at http://localhost:8000/docs.
 
@@ -214,7 +253,7 @@ devassist/
 │   ├── app/
 │   │   ├── ingest/         Clone, filter, chunk (tree-sitter), embed, store
 │   │   ├── qa/             Hybrid search and cited answers
-│   │   ├── review/         Pull request fetching, diff parsing, rules and model checks
+│   │   ├── review/         Pull requests: diffs, rules, model checks, GitHub App, posting
 │   │   ├── routes/         HTTP endpoints
 │   │   ├── models.py       SQLAlchemy models
 │   │   ├── worker.py       Celery app and tasks
@@ -237,7 +276,7 @@ devassist/
 - [x] **Week 1: Foundations.** Monorepo, FastAPI and Next.js skeletons, Docker Compose, CI
 - [x] **Week 2: Ingestion.** Clone repos, chunk code with tree-sitter, store embeddings in pgvector
 - [x] **Week 3: Retrieval.** Hybrid search, streamed answers with citations, saved conversations
-- [ ] **Week 4: PR reviews.** ✅ Review any public PR with inline findings · ⬜ GitHub App: webhooks and posting reviews to GitHub
+- [ ] **Week 4: PR reviews.** ✅ Review any public PR with inline findings · ✅ Bug rules and checked model findings · 🚧 GitHub App: built and tested, first live run next
 - [ ] **Week 5: Product.** GitHub sign-in, multiple repos, rate limiting, incremental re-indexing
 - [ ] **Week 6: Quality.** 50-question evaluation set, accuracy gate in CI, 80% test coverage
 - [ ] **Week 7: Deploy.** AWS with Terraform, HTTPS, CI/CD, monitoring

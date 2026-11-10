@@ -114,6 +114,10 @@ export type ReviewSummary = {
   progress: number;
   error: string | null;
   finding_count: number;
+  // true when the GitHub App started the review on a new commit; it is then posted on the PR
+  automatic: boolean;
+  github_review_url: string | null;
+  post_error: string | null;
   created_at: string;
   finished_at: string | null;
 };
